@@ -275,6 +275,59 @@ class ControlBotTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_add_wizard_keeps_target_cloud_empty_for_hybrid(self):
+        root = fresh_test_dir("bot-add-wizard")
+        try:
+            (root / "config.json").write_text(
+                json.dumps(
+                    {
+                        "rotation_mode": "hybrid",
+                        "target_cloud_id": "",
+                        "hybrid_use_service_cloud_first": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path = root / "telegram_bot_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bot_token": "123:token",
+                        "allowed_chat_ids": [1],
+                        "accounts": [
+                            {
+                                "name": "Main",
+                                "workdir": str(root),
+                                "config": "config.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            control = bot.ControlBot(config_path)
+            control.api = mock.Mock()
+            control.api.download_file.return_value = b'{"id":"key-id"}'
+
+            control.finish_add_wizard(
+                1,
+                {
+                    "name": "Second",
+                    "org_id": "org-1",
+                    "billing_id": "billing-1",
+                    "cloud_id": "service-cloud-1",
+                },
+                {"file_id": "file-1"},
+            )
+
+            created_config = json.loads((root / "config2.json").read_text(encoding="utf-8"))
+            self.assertEqual(created_config["service_cloud_id"], "service-cloud-1")
+            self.assertEqual(created_config["target_cloud_id"], "")
+            self.assertEqual(created_config["cloud_id"], "")
+            self.assertEqual(created_config["folder_id"], "")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1175,7 +1175,6 @@ class IpHunter:
                 )
                 if bool(self.config.get("auto_grant_current_resources", True)):
                     self.grant_self_access_to_cloud(cloud_id)
-                    self.sleep_after_iam_grants()
                     try:
                         self.grant_self_access_to_folder(folder_id)
                     except ApiError as exc:
@@ -1194,6 +1193,8 @@ class IpHunter:
                             folder_id = ""
                         else:
                             raise
+                    if folder_id:
+                        self.sleep_after_iam_grants()
                 if folder_id:
                     return cloud_id, folder_id
         if self.state.get("hybrid_folder_id") or self.state.get("current_folder_id"):

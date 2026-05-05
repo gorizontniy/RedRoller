@@ -1287,7 +1287,7 @@ class ControlBot:
             "organization_id": state["org_id"],
             "billing_account_id": state["billing_id"],
             "service_cloud_id": state["cloud_id"],
-            "target_cloud_id": state["cloud_id"],
+            "target_cloud_id": "",
             "cloud_id": "",
             "folder_id": "",
             "auth": {
