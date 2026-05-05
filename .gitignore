@@ -1,6 +1,8 @@
 config.json
 config.*.json
 !config.example.json
+telegram_bot_config.json
+.telegram_bot.offset
 sa-key.json
 *-key.json
 *.pem
@@ -11,6 +13,10 @@ state.json
 state.json.tmp
 run.log
 *.log
+.ip-hunter.*
+exports/
+.test-tmp/
+tmp*/
 __pycache__/
 *.pyc
 .pytest_cache/

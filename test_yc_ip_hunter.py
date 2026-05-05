@@ -1,5 +1,6 @@
 import importlib.util
 import ipaddress
+import shutil
 import sys
 import unittest
 import urllib.parse
@@ -13,6 +14,13 @@ yc = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = yc
 SPEC.loader.exec_module(yc)
+
+
+def fresh_test_dir(name):
+    path = MODULE_PATH.parent / ".test-tmp" / name
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True)
+    return path
 
 
 class CandidateIpTests(unittest.TestCase):
@@ -219,12 +227,95 @@ class IterationTests(unittest.TestCase):
 
         self.assertEqual((cloud_id, folder_id), ("hunting-cloud", "folder-1"))
 
+    def test_hybrid_scope_recreates_missing_saved_folder(self):
+        class FakeClient:
+            def get_folder(self, folder_id):
+                raise yc.ApiError(404, 5, f"Folder with id {folder_id} not found")
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "target_cloud_id": "cloud-1",
+            "folder_name_prefix": "roll",
+            "cloud_name_prefix": "ip-hunter",
+            "new_cloud_service_account_role": "admin",
+            "new_folder_service_account_role": "admin",
+        }
+        hunter.state = {
+            "hybrid_cloud_id": "cloud-1",
+            "hybrid_folder_id": "missing-folder",
+        }
+        hunter.client = FakeClient()
+        hunter.persist_state = lambda: None
+        hunter.grant_self_access_to_cloud = lambda cloud_id: None
+        hunter.grant_self_access_to_folder = lambda folder_id: None
+        hunter.sleep_after_iam_grants = lambda: None
+        hunter.create_named_folder = lambda cloud_id, folder_name: "fresh-folder"
+
+        cloud_id, folder_id = hunter.ensure_hybrid_address_scope(1)
+
+        self.assertEqual((cloud_id, folder_id), ("cloud-1", "fresh-folder"))
+        self.assertEqual(hunter.state["hybrid_folder_id"], "fresh-folder")
+
+    def test_hybrid_scope_regrants_saved_folder_access(self):
+        class FakeClient:
+            def get_folder(self, folder_id):
+                return {"id": folder_id, "cloudId": "cloud-1"}
+
+        calls = []
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "target_cloud_id": "cloud-1",
+            "auto_grant_current_resources": True,
+        }
+        hunter.state = {
+            "hybrid_cloud_id": "cloud-1",
+            "hybrid_folder_id": "folder-1",
+        }
+        hunter.client = FakeClient()
+        hunter.grant_self_access_to_cloud = lambda cloud_id: calls.append(("cloud", cloud_id))
+        hunter.grant_self_access_to_folder = lambda folder_id: calls.append(("folder", folder_id))
+        hunter.sleep_after_iam_grants = lambda: calls.append(("sleep", None))
+
+        cloud_id, folder_id = hunter.ensure_hybrid_address_scope(1)
+
+        self.assertEqual((cloud_id, folder_id), ("cloud-1", "folder-1"))
+        self.assertEqual(
+            calls,
+            [("cloud", "cloud-1"), ("folder", "folder-1"), ("sleep", None)],
+        )
+
     def test_hybrid_never_deletes_service_cloud(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.config = {"service_cloud_id": "service-cloud"}
 
         self.assertFalse(hunter.can_delete_hybrid_cloud("service-cloud"))
         self.assertTrue(hunter.can_delete_hybrid_cloud("hunting-cloud"))
+
+    def test_cloud_slot_count_ignores_fixed_and_unmanaged_clouds(self):
+        class FakeClient:
+            def list_clouds(self, organization_id):
+                return [
+                    {"id": "service-cloud", "name": "service"},
+                    {"id": "target-cloud", "name": "main"},
+                    {"id": "random-user-cloud", "name": "personal"},
+                    {
+                        "id": "managed-by-label",
+                        "name": "anything",
+                        "labels": {"managed-by": "yc-ip-hunter"},
+                    },
+                    {"id": "managed-by-name", "name": "ip-hunter-20260505"},
+                ]
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "organization_id": "org",
+            "service_cloud_id": "service-cloud",
+            "target_cloud_id": "target-cloud",
+            "cloud_name_prefix": "ip-hunter",
+        }
+        hunter.client = FakeClient()
+
+        self.assertEqual(hunter.count_non_service_clouds(), 2)
 
     def test_cloud_delete_cleanup_settings_exist(self):
         text = MODULE_PATH.read_text(encoding="utf-8")
@@ -236,6 +327,40 @@ class IterationTests(unittest.TestCase):
         self.assertIn("notify_success", text)
         self.assertIn("TELEGRAM_BOT_TOKEN", text)
         self.assertIn("--test-telegram", text)
+
+    def test_stop_file_interrupts_sleep(self):
+        hunter = object.__new__(yc.IpHunter)
+        root = fresh_test_dir("stop")
+        try:
+            stop_path = root / "stop"
+            stop_path.write_text("stop", encoding="utf-8")
+            hunter.stop_path = stop_path
+            hunter.state = {}
+            hunter.dry_run = False
+            hunter.persist_state = lambda: None
+
+            with self.assertRaises(yc.StopRequested):
+                hunter.sleep_backoff(10)
+
+            self.assertIn("stopped_at", hunter.state)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_recreate_file_is_consumed(self):
+        hunter = object.__new__(yc.IpHunter)
+        root = fresh_test_dir("recreate")
+        try:
+            recreate_path = root / "recreate"
+            recreate_path.write_text("recreate", encoding="utf-8")
+            hunter.recreate_path = recreate_path
+            hunter.state = {}
+            hunter.persist_state = lambda: None
+
+            self.assertTrue(hunter.consume_recreate_request())
+            self.assertFalse(recreate_path.exists())
+            self.assertEqual(hunter.state["manual_recreates_done"], 1)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class StateTrackingTests(unittest.TestCase):
@@ -284,6 +409,8 @@ class StateTrackingTests(unittest.TestCase):
 
                 self.assertIsNotNone(result)
                 self.assertEqual(result.ip, ip)
+                self.assertEqual(hunter.state["checked_count"], 1)
+                self.assertEqual(hunter.state["unique_checked_count"], 1)
 
     def test_track_cloud_address_deduplicates(self):
         hunter = object.__new__(yc.IpHunter)

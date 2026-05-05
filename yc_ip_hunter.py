@@ -92,6 +92,10 @@ class RateLimitHit(RuntimeError):
     """Raised when API asks us to slow down."""
 
 
+class StopRequested(RuntimeError):
+    """Raised when an external controller asks the hunter to stop cleanly."""
+
+
 @dataclasses.dataclass
 class AttemptResult:
     ip: str
@@ -488,6 +492,15 @@ class YandexCloudClient:
             operation_hint="cloud-get",
         )
 
+    def get_folder(self, folder_id: str) -> Dict[str, Any]:
+        quoted = urllib.parse.quote(folder_id, safe="")
+        return self.request(
+            "GET",
+            f"{RESOURCE_MANAGER_URL}/folders/{quoted}",
+            body=None,
+            operation_hint="folder-get",
+        )
+
     def delete_cloud(self, cloud_id: str, immediate: bool, wait: bool = True) -> Optional[Dict[str, Any]]:
         quoted = urllib.parse.quote(cloud_id, safe="")
         url = f"{RESOURCE_MANAGER_URL}/clouds/{quoted}"
@@ -831,6 +844,18 @@ class IpHunter:
         assert self.state_path is not None
         self.state = load_state(self.state_path)
 
+        control_config = config.get("control") or {}
+        if not isinstance(control_config, dict):
+            control_config = {}
+        self.stop_path = resolve_path(
+            self.config_dir,
+            str(control_config.get("stop_file") or config.get("stop_file") or ""),
+        )
+        self.recreate_path = resolve_path(
+            self.config_dir,
+            str(control_config.get("recreate_file") or config.get("recreate_file") or ""),
+        )
+
         log_file = resolve_path(self.config_dir, config.get("log_file") or "run.log")
         setup_logging(log_file, bool(config.get("verbose", False)))
 
@@ -889,6 +914,7 @@ class IpHunter:
         max_recreations = int(self.config.get("max_cloud_recreations", 0))
 
         while True:
+            self.check_control_requests()
             LOGGER.info("Trying candidates in cloud=%s folder=%s", cloud_id, folder_id)
             try:
                 result = self.try_current_cloud(cloud_id, folder_id)
@@ -1073,12 +1099,18 @@ class IpHunter:
                 )
                 if managed_cloud:
                     self.submit_cloud_delete(cloud_id)
+                    done = int(self.state.get("cloud_recreations_done", 0)) + 1
+                    self.state["cloud_recreations_done"] = done
+                    self.persist_state()
                 self.sleep_backoff(float(self.config.get("cloud_iteration_sleep_seconds", 45)))
                 backoff = base_backoff
             except RateLimitHit as exc:
                 LOGGER.warning("Rate limit hit during hybrid rotation: %s", exc)
                 if cloud_id and managed_cloud:
                     self.submit_cloud_delete(cloud_id)
+                    done = int(self.state.get("cloud_recreations_done", 0)) + 1
+                    self.state["cloud_recreations_done"] = done
+                    self.persist_state()
                 self.sleep_backoff(backoff)
                 backoff = min(max_backoff, backoff * 2)
             except QuotaHit as exc:
@@ -1126,12 +1158,44 @@ class IpHunter:
         if not folder_id and state_current_cloud_id == cloud_id:
             folder_id = str(self.state.get("current_folder_id") or "")
         if folder_id:
-            LOGGER.info(
-                "Hybrid mode starts with existing cloud=%s folder=%s.",
-                cloud_id,
-                folder_id,
-            )
-            return cloud_id, folder_id
+            if not explicit_folder_id and not self.saved_folder_is_usable(folder_id, cloud_id):
+                LOGGER.warning(
+                    "Saved folder %s is not usable; creating a fresh working folder.",
+                    folder_id,
+                )
+                self.state.pop("hybrid_folder_id", None)
+                self.state.pop("current_folder_id", None)
+                self.persist_state()
+                folder_id = ""
+            else:
+                LOGGER.info(
+                    "Hybrid mode starts with existing cloud=%s folder=%s.",
+                    cloud_id,
+                    folder_id,
+                )
+                if bool(self.config.get("auto_grant_current_resources", True)):
+                    self.grant_self_access_to_cloud(cloud_id)
+                    self.sleep_after_iam_grants()
+                    try:
+                        self.grant_self_access_to_folder(folder_id)
+                    except ApiError as exc:
+                        if exc.status == 403:
+                            LOGGER.warning(
+                                "Cannot grant access to saved folder %s (403); deleting it and creating a fresh one.",
+                                folder_id,
+                            )
+                            try:
+                                self.submit_folder_delete(folder_id)
+                            except Exception as _del_exc:  # noqa: BLE001
+                                LOGGER.warning("Could not delete stale folder %s: %s", folder_id, _del_exc)
+                            self.state.pop("hybrid_folder_id", None)
+                            self.state.pop("current_folder_id", None)
+                            self.persist_state()
+                            folder_id = ""
+                        else:
+                            raise
+                if folder_id:
+                    return cloud_id, folder_id
         if self.state.get("hybrid_folder_id") or self.state.get("current_folder_id"):
             LOGGER.warning(
                 "Ignoring stale folder from state because it belongs to another cloud."
@@ -1149,6 +1213,19 @@ class IpHunter:
         self.state["hybrid_folder_id"] = folder_id
         self.persist_state()
         return cloud_id, folder_id
+
+    def saved_folder_is_usable(self, folder_id: str, cloud_id: str) -> bool:
+        try:
+            folder = self.client.get_folder(folder_id)
+        except ApiError as exc:
+            text = exc.text()
+            if exc.status in {403, 404} or "deleted" in text or "deletion" in text or "not found" in text:
+                return False
+            raise
+        folder_cloud_id = str(folder.get("cloudId") or folder.get("cloud_id") or "")
+        if folder_cloud_id and folder_cloud_id != cloud_id:
+            return False
+        return True
 
     def can_delete_hybrid_cloud(self, cloud_id: str) -> bool:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
@@ -1168,6 +1245,8 @@ class IpHunter:
         consecutive_limits = 0
 
         for address_iteration in self.iteration_numbers(max_attempts):
+            if self.consume_recreate_request():
+                return None
             LOGGER.info(
                 "Address rotation in cloud %s attempt %s/%s.",
                 cloud_id,
@@ -1244,6 +1323,8 @@ class IpHunter:
         delay = float(self.config.get("address_iteration_sleep_seconds", 7))
 
         for address_index in range(1, max_addresses + 1):
+            if self.consume_recreate_request():
+                return None
             LOGGER.info(
                 "Cloud %s address attempt %s/%s.",
                 cloud_id,
@@ -1267,9 +1348,12 @@ class IpHunter:
         if max_iterations == 0:
             iteration = 1
             while True:
+                self.check_control_requests()
                 yield iteration
                 iteration += 1
-        yield from range(1, max_iterations + 1)
+        for iteration in range(1, max_iterations + 1):
+            self.check_control_requests()
+            yield iteration
 
     def iteration_limit_label(self, max_iterations: int) -> str:
         return "until-success" if max_iterations == 0 else str(max_iterations)
@@ -1280,7 +1364,11 @@ class IpHunter:
         return sanitize_resource_name(f"{raw_prefix}-{timestamp}-{iteration}")
 
     def primary_zone(self) -> str:
-        return str(self.config.get("zone") or (self.config.get("zones") or ["ru-central1-a"])[0])
+        import random as _random
+        zones = self.config.get("zones") or []
+        if zones and len(zones) > 1:
+            return str(_random.choice(zones))
+        return str(self.config.get("zone") or (zones[0] if zones else "ru-central1-a"))
 
     def log_target_ranges(self) -> None:
         target_ips = self.config.get("target_ips") or []
@@ -1293,13 +1381,45 @@ class IpHunter:
         )
 
     def sleep_backoff(self, seconds: float) -> None:
+        self.check_control_requests()
         if seconds <= 0:
             return
         if self.dry_run:
             LOGGER.info("[dry-run] Would sleep %.1f seconds.", seconds)
             return
         LOGGER.info("Sleeping %.1f seconds.", seconds)
-        time.sleep(seconds)
+        deadline = time.time() + seconds
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(1.0, remaining))
+            self.check_control_requests()
+
+    def check_control_requests(self) -> None:
+        stop_path = getattr(self, "stop_path", None)
+        if not stop_path or not Path(stop_path).exists():
+            return
+        LOGGER.warning("Stop requested by control file %s.", stop_path)
+        self.state["stopped_at"] = utc_now_rfc3339()
+        self.state["stop_file"] = str(stop_path)
+        self.persist_state()
+        raise StopRequested(f"Stop requested by {stop_path}")
+
+    def consume_recreate_request(self) -> bool:
+        recreate_path = getattr(self, "recreate_path", None)
+        if not recreate_path or not Path(recreate_path).exists():
+            return False
+        try:
+            Path(recreate_path).unlink()
+        except OSError as exc:
+            LOGGER.warning("Could not remove recreate control file %s: %s", recreate_path, exc)
+        done = int(self.state.get("manual_recreates_done", 0)) + 1
+        self.state["manual_recreates_done"] = done
+        self.state["manual_recreate_requested_at"] = utc_now_rfc3339()
+        self.persist_state()
+        LOGGER.warning("Manual recreate requested by control file %s.", recreate_path)
+        return True
 
     def sleep_after_iam_grants(self) -> None:
         self.sleep_backoff(float(self.config.get("iam_propagation_sleep_seconds", 15)))
@@ -1387,13 +1507,22 @@ class IpHunter:
         if not allocated_ip or not address_id:
             raise ApiError(200, "bad_response", "Address response has no id or allocated IP.", body=address)
 
+        target_networks = build_target_networks(self.config.get("target_cidrs") or DEFAULT_TARGET_CIDRS)
+        matched = ip_matches_targets(str(allocated_ip), self.config.get("target_ips") or [], target_networks)
         self.state["last_address_id"] = address_id
         self.state["last_allocated_ip"] = allocated_ip
         self.track_cloud_address(cloud_id, address_id, str(allocated_ip))
+        self.record_allocation_result(
+            cloud_id=cloud_id,
+            folder_id=folder_id,
+            zone=zone,
+            ip=str(allocated_ip),
+            address_id=address_id,
+            matched=matched,
+        )
         self.persist_state()
 
-        target_networks = build_target_networks(self.config.get("target_cidrs") or DEFAULT_TARGET_CIDRS)
-        if ip_matches_targets(str(allocated_ip), self.config.get("target_ips") or [], target_networks):
+        if matched:
             LOGGER.warning(
                 "TARGET MATCH: allocated IP %s is in configured target ranges. Stopping and keeping address %s.",
                 allocated_ip,
@@ -1410,6 +1539,54 @@ class IpHunter:
 
         LOGGER.info("Allocated IP %s is not in target ranges.", allocated_ip)
         return None
+
+    def record_allocation_result(
+        self,
+        cloud_id: str,
+        folder_id: str,
+        zone: str,
+        ip: str,
+        address_id: str,
+        matched: bool,
+    ) -> None:
+        checked_count = int(self.state.get("checked_count", 0)) + 1
+        seen_ips = self.state.setdefault("seen_ips", [])
+        if not isinstance(seen_ips, list):
+            seen_ips = []
+            self.state["seen_ips"] = seen_ips
+        if ip not in set(map(str, seen_ips)):
+            seen_ips.append(ip)
+
+        zone_counts = self.state.setdefault("zone_counts", {})
+        if not isinstance(zone_counts, dict):
+            zone_counts = {}
+            self.state["zone_counts"] = zone_counts
+        zone_counts[zone] = int(zone_counts.get(zone, 0)) + 1
+
+        checked_at = utc_now_rfc3339()
+        self.state["checked_count"] = checked_count
+        self.state["unique_checked_count"] = len(seen_ips)
+        self.state["last_zone"] = zone
+        self.state["last_checked_at"] = checked_at
+
+        recent = self.state.setdefault("recent_allocations", [])
+        if not isinstance(recent, list):
+            recent = []
+            self.state["recent_allocations"] = recent
+        recent.append(
+            {
+                "at": checked_at,
+                "cloud_id": cloud_id,
+                "folder_id": folder_id,
+                "zone": zone,
+                "ip": ip,
+                "address_id": address_id,
+                "matched": bool(matched),
+            }
+        )
+        max_state_attempts = int(getattr(self, "max_state_attempts", 20000))
+        if len(recent) > max_state_attempts:
+            del recent[: len(recent) - max_state_attempts]
 
     def save_success(self, result: AttemptResult) -> None:
         self.state["success"] = dataclasses.asdict(result)
@@ -1652,12 +1829,27 @@ class IpHunter:
             return 0
         clouds = self.client.list_clouds(organization_id)
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
+        excluded_cloud_ids = {
+            cloud_id
+            for cloud_id in [
+                service_cloud_id,
+                str(self.config.get("target_cloud_id") or ""),
+                str(self.config.get("cloud_id") or ""),
+            ]
+            if cloud_id
+        }
+        name_prefix = sanitize_resource_name(
+            str(self.config.get("cloud_name_prefix") or "ip-hunter")
+        )
         count = 0
         for cloud in clouds:
             cloud_id = str(cloud.get("id") or "")
-            if service_cloud_id and cloud_id == service_cloud_id:
+            if cloud_id in excluded_cloud_ids:
                 continue
-            count += 1
+            labels = cloud.get("labels") or {}
+            name = str(cloud.get("name") or "")
+            if labels.get("managed-by") == "yc-ip-hunter" or name.startswith(name_prefix):
+                count += 1
         return count
 
     def step_error(self, step: str, exc: ApiError) -> ConfigError:
@@ -2097,6 +2289,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Send one Telegram test message and exit.",
     )
+    parser.add_argument(
+        "--stop-file",
+        default="",
+        help="Path to a control file; if it exists, the hunter stops cleanly.",
+    )
+    parser.add_argument(
+        "--recreate-file",
+        default="",
+        help="Path to a control file; if it exists, the current address cycle rotates.",
+    )
     return parser.parse_args(argv)
 
 
@@ -2105,6 +2307,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     config_path = Path(args.config).resolve()
     try:
         config = load_json_or_yaml(config_path)
+        if args.stop_file:
+            config["stop_file"] = args.stop_file
+        if args.recreate_file:
+            config["recreate_file"] = args.recreate_file
         dry_run_override = True if args.dry_run else False if args.run else None
         hunter = IpHunter(
             config=config,
@@ -2117,6 +2323,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return hunter.run()
     except KeyboardInterrupt:
         LOGGER.error("Interrupted.")
+        return 130
+    except StopRequested as exc:
+        if not LOGGER.handlers:
+            logging.basicConfig(level=logging.INFO)
+        LOGGER.warning("%s", exc)
         return 130
     except (ConfigError, ApiError) as exc:
         if not LOGGER.handlers:

@@ -24,7 +24,7 @@
   "folder_name_prefix": "roll",
   "folder_name": "ip-hunter",
   "zone": "ru-central1-a",
-  "zones": ["ru-central1-a"],
+  "zones": ["ru-central1-a", "ru-central1-e"],
   "target_ips": [],
   "target_cidrs": [
     "84.201.188.0/23",
@@ -63,6 +63,10 @@
   "attempt_delay_seconds": 0.2,
   "operation_timeout_seconds": 900,
   "operation_poll_seconds": 5,
+  "control": {
+    "stop_file": ".ip-hunter.stop",
+    "recreate_file": ".ip-hunter.recreate"
+  },
   "state_file": "state.json",
   "log_file": "run.log",
   "max_state_attempts": 20000

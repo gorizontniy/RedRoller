@@ -1,0 +1,22 @@
+{
+  "bot_token_env": "TELEGRAM_BOT_TOKEN",
+  "allowed_chat_ids": [],
+  "allow_any_chat": false,
+  "poll_timeout_seconds": 25,
+  "stop_timeout_seconds": 45,
+  "live_log_interval_seconds": 5,
+  "drop_pending_updates_on_start": true,
+  "offset_file": ".telegram_bot.offset",
+  "python": "",
+  "telegram_proxy_url": "",
+  "accounts": [
+    {
+      "name": "Main",
+      "workdir": ".",
+      "config": "config.json",
+      "script": "yc_ip_hunter.py",
+      "args": ["--run", "--yes-delete-cloud"],
+      "proxy_url": ""
+    }
+  ]
+}
