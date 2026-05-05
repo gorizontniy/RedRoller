@@ -193,6 +193,10 @@ def config_bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def is_placeholder_value(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().upper().startswith("REPLACE_WITH_")
+
+
 def youtube_video_parts(url: str) -> Tuple[str, str]:
     parsed = urllib.parse.urlparse(url)
     query = urllib.parse.parse_qs(parsed.query)
@@ -880,10 +884,28 @@ class IpHunter:
             raise ConfigError("organization_id is required.")
         if rotation_mode in {"legacy", "cloud", "hybrid"} and not self.config.get("billing_account_id"):
             raise ConfigError("billing_account_id is required.")
+        for key in ("organization_id", "billing_account_id"):
+            if rotation_mode in {"legacy", "cloud", "hybrid"} and is_placeholder_value(
+                self.config.get(key)
+            ):
+                raise ConfigError(f"{key} still contains a REPLACE_WITH_* placeholder.")
         if rotation_mode == "folder" and not (
             self.config.get("target_cloud_id") or self.config.get("cloud_id")
         ):
             raise ConfigError("target_cloud_id or cloud_id is required for folder mode.")
+        active_cloud_keys = []
+        if rotation_mode == "folder":
+            active_cloud_keys = ["target_cloud_id", "cloud_id"]
+        elif rotation_mode == "hybrid":
+            active_cloud_keys = ["target_cloud_id", "cloud_id"]
+            if config_bool(self.config.get("hybrid_use_service_cloud_first"), default=False):
+                active_cloud_keys.append("service_cloud_id")
+        elif rotation_mode in {"legacy", "cloud"}:
+            active_cloud_keys = ["cloud_id"]
+        for key in active_cloud_keys:
+            value = self.config.get(key)
+            if value and is_placeholder_value(value):
+                raise ConfigError(f"{key} still contains a REPLACE_WITH_* placeholder.")
         zones = self.config.get("zones") or []
         if not zones and self.config.get("zone"):
             zones = [self.config["zone"]]

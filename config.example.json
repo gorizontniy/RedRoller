@@ -17,7 +17,7 @@
   "organization_id": "REPLACE_WITH_ORGANIZATION_ID",
   "billing_account_id": "REPLACE_WITH_BILLING_ACCOUNT_ID",
   "service_cloud_id": "REPLACE_WITH_SERVICE_CLOUD_ID",
-  "target_cloud_id": "REPLACE_WITH_TARGET_CLOUD_ID_FOR_FOLDER_MODE",
+  "target_cloud_id": "",
   "cloud_id": "",
   "folder_id": "",
   "cloud_name_prefix": "ip-hunter",

@@ -193,8 +193,8 @@ yc_ip_hunter/
 "target_cloud_id": "REPLACE_WITH_TARGET_CLOUD_ID_FOR_FOLDER_MODE"
 ```
 
-Если используете `hybrid` или `cloud`, поле можно оставить плейсхолдером/пустым,
-а рабочими будут `organization_id`, `billing_account_id`, `service_cloud_id`.
+Если используете `hybrid` или `cloud`, оставьте `target_cloud_id` пустым.
+Плейсхолдер `REPLACE_WITH_TARGET_CLOUD_ID_FOR_FOLDER_MODE` нужен только для `folder` mode и в live-конфиге будет отклонён.
 
 ## Как заполнить `config.json`
 

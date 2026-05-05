@@ -1,5 +1,6 @@
 import importlib.util
 import ipaddress
+import json
 import shutil
 import sys
 import unittest
@@ -185,6 +186,28 @@ class IterationTests(unittest.TestCase):
         }
         hunter._validate_config()
         self.assertEqual(hunter.config["rotation_mode"], "hybrid")
+
+    def test_validate_rejects_active_placeholder_cloud_id(self):
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "rotation_mode": "hybrid",
+            "organization_id": "org",
+            "billing_account_id": "billing",
+            "target_cloud_id": "REPLACE_WITH_TARGET_CLOUD_ID_FOR_FOLDER_MODE",
+            "zones": ["ru-central1-a"],
+            "target_cidrs": ["198.51.100.0/24"],
+            "max_ip_candidates_per_cloud": 1,
+            "max_cloud_recreations": 0,
+        }
+
+        with self.assertRaises(yc.ConfigError):
+            hunter._validate_config()
+
+    def test_config_example_keeps_hybrid_target_cloud_empty(self):
+        config = json.loads(MODULE_PATH.with_name("config.example.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(config["rotation_mode"], "hybrid")
+        self.assertEqual(config["target_cloud_id"], "")
 
     def test_hybrid_scope_ignores_stale_state_folder(self):
         hunter = object.__new__(yc.IpHunter)

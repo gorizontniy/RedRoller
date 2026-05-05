@@ -192,6 +192,23 @@ class HunterAccountTests(unittest.TestCase):
             finally:
                 shutil.rmtree(root, ignore_errors=True)
 
+    def test_is_running_ignores_locked_stale_pid_file(self):
+        with mock.patch.object(bot, "pid_exists", return_value=False):
+            root = fresh_test_dir("bot-stale-pid-locked")
+            try:
+                (root / "config.json").write_text("{}", encoding="utf-8")
+                account = bot.HunterAccount(
+                    {"name": "Main", "workdir": str(root), "config": "config.json"},
+                    base_dir=root,
+                    default_python="python",
+                )
+                account.pid_file.write_text("999999", encoding="utf-8")
+
+                with mock.patch.object(bot.Path, "unlink", side_effect=PermissionError("locked")):
+                    self.assertFalse(account.is_running())
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+
     def test_stop_confirms_recent_state_stop_without_pid(self):
         root = fresh_test_dir("bot-stop-confirmed")
         try:
@@ -214,6 +231,69 @@ class HunterAccountTests(unittest.TestCase):
 
             self.assertTrue(ok)
             self.assertIn("остановлен", text)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_stop_ignores_locked_stop_file_after_confirmed_stop(self):
+        root = fresh_test_dir("bot-stop-confirmed-locked")
+        try:
+            stopped_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            (root / "config.json").write_text(
+                json.dumps({"state_file": "state.json"}),
+                encoding="utf-8",
+            )
+            (root / "state.json").write_text(
+                json.dumps({"stopped_at": stopped_at}),
+                encoding="utf-8",
+            )
+            account = bot.HunterAccount(
+                {"name": "Main", "workdir": str(root), "config": "config.json"},
+                base_dir=root,
+                default_python="python",
+            )
+
+            with mock.patch.object(bot.Path, "unlink", side_effect=PermissionError("locked")):
+                ok, _ = account.stop(timeout=1)
+
+            self.assertTrue(ok)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_closes_parent_runner_log_handle(self):
+        root = fresh_test_dir("bot-start-log-handle")
+        captured = {}
+
+        class FakeProcess:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+        def fake_popen(*args, **kwargs):
+            captured["stdout"] = kwargs["stdout"]
+            return FakeProcess()
+
+        try:
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            (root / "yc_ip_hunter.py").write_text("print('ok')\n", encoding="utf-8")
+            account = bot.HunterAccount(
+                {
+                    "name": "Main",
+                    "workdir": str(root),
+                    "config": "config.json",
+                    "script": "yc_ip_hunter.py",
+                    "startup_check_seconds": 0,
+                },
+                base_dir=root,
+                default_python="python",
+            )
+
+            with mock.patch.object(bot.subprocess, "Popen", side_effect=fake_popen):
+                ok, _ = account.start()
+
+            self.assertTrue(ok)
+            self.assertTrue(captured["stdout"].closed)
+            self.assertEqual(account.pid_file.read_text(encoding="utf-8"), "12345")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -327,6 +407,81 @@ class ControlBotTests(unittest.TestCase):
             self.assertEqual(created_config["folder_id"], "")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_add_wizard_skips_existing_account_files(self):
+        root = fresh_test_dir("bot-add-wizard-collision")
+        try:
+            (root / "config.json").write_text(
+                json.dumps({"rotation_mode": "hybrid", "target_cloud_id": ""}),
+                encoding="utf-8",
+            )
+            (root / "config2.json").write_text("existing-config", encoding="utf-8")
+            (root / "sa-key2.json").write_text("existing-key", encoding="utf-8")
+            config_path = root / "telegram_bot_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bot_token": "123:token",
+                        "allowed_chat_ids": [1],
+                        "accounts": [
+                            {
+                                "name": "Main",
+                                "workdir": str(root),
+                                "config": "config.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            control = bot.ControlBot(config_path)
+            control.api = mock.Mock()
+            control.api.download_file.return_value = b'{"id":"key-id"}'
+
+            with mock.patch.object(bot, "write_json_atomic", wraps=bot.write_json_atomic) as write_atomic:
+                control.finish_add_wizard(
+                    1,
+                    {
+                        "name": "Second",
+                        "org_id": "org-1",
+                        "billing_id": "billing-1",
+                        "cloud_id": "service-cloud-1",
+                    },
+                    {"file_id": "file-1"},
+                )
+
+            self.assertEqual((root / "config2.json").read_text(encoding="utf-8"), "existing-config")
+            self.assertEqual((root / "sa-key2.json").read_text(encoding="utf-8"), "existing-key")
+            self.assertTrue((root / "config3.json").exists())
+            self.assertTrue((root / "sa-key3.json").exists())
+            write_atomic.assert_called_once()
+            bot_config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(bot_config["accounts"][-1]["config"], "config3.json")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_monitor_loop_removes_finished_thread_record(self):
+        class FakeAccount:
+            def draft_text(self):
+                return "draft"
+
+            def monitor_text(self):
+                return "monitor"
+
+            def is_running(self):
+                return False
+
+        control = object.__new__(bot.ControlBot)
+        control.accounts = [FakeAccount()]
+        control.api = mock.Mock()
+        control.live_log_interval = 2
+        control.monitor_threads = {("1", 99): object()}
+        control.monitor_keyboard = lambda index: {}
+        control.emit_new_events = lambda chat_id, index: None
+
+        control.monitor_loop(1, 0, 99)
+
+        self.assertNotIn(("1", 99), control.monitor_threads)
 
 
 if __name__ == "__main__":

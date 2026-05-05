@@ -123,6 +123,32 @@ def read_optional_json(path: Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def safe_unlink(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        print(f"Could not remove {path}: {exc}", file=sys.stderr)
+        return False
+
+
+def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def next_account_files(base_dir: Path, start: int) -> Tuple[Path, Path]:
+    n = max(1, start)
+    while True:
+        key_path = base_dir / f"sa-key{n}.json"
+        cfg_path = base_dir / f"config{n}.json"
+        if not key_path.exists() and not cfg_path.exists():
+            return key_path, cfg_path
+        n += 1
+
+
 def format_count(value: Any) -> int:
     try:
         return int(value or 0)
@@ -461,7 +487,7 @@ class HunterAccount:
             return False
         running = pid_exists(pid)
         if not running:
-            self.pid_file.unlink(missing_ok=True)
+            safe_unlink(self.pid_file)
         return running
 
     def start(self) -> Tuple[bool, str]:
@@ -472,8 +498,8 @@ class HunterAccount:
         if not self.script_path.exists():
             return False, f"Нет скрипта: {self.script_path}"
 
-        self.stop_file.unlink(missing_ok=True)
-        self.recreate_file.unlink(missing_ok=True)
+        safe_unlink(self.stop_file)
+        safe_unlink(self.recreate_file)
         self.runner_log.parent.mkdir(parents=True, exist_ok=True)
         command = [
             self.python,
@@ -492,23 +518,23 @@ class HunterAccount:
             env["HTTP_PROXY"] = self.proxy_url
             env["HTTPS_PROXY"] = self.proxy_url
 
-        log_handle = self.runner_log.open("ab")
         creationflags = 0
         if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        process = subprocess.Popen(
-            command,
-            cwd=str(self.workdir),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            creationflags=creationflags,
-        )
+        with self.runner_log.open("ab") as log_handle:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.workdir),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                creationflags=creationflags,
+            )
         self.pid_file.write_text(str(process.pid), encoding="utf-8")
         time.sleep(float(self.raw.get("startup_check_seconds") or 1.0))
         if process.poll() is not None:
-            self.pid_file.unlink(missing_ok=True)
+            safe_unlink(self.pid_file)
             tail = "\n".join(tail_lines(self.runner_log, 12))
             if tail:
                 return False, f"{self.name} не стартовал.\n\n{tail[-1500:]}"
@@ -537,7 +563,7 @@ class HunterAccount:
             deadline = time.time() + min(timeout, 15)
             while time.time() < deadline:
                 if self.stop_observed_since(requested_at):
-                    self.stop_file.unlink(missing_ok=True)
+                    safe_unlink(self.stop_file)
                     return True, f"{self.name} остановлен по stop-file."
                 time.sleep(1)
             return True, (
@@ -547,12 +573,12 @@ class HunterAccount:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not pid_exists(pid):
-                self.pid_file.unlink(missing_ok=True)
-                self.stop_file.unlink(missing_ok=True)
+                safe_unlink(self.pid_file)
+                safe_unlink(self.stop_file)
                 return True, f"{self.name} остановлен."
             if self.stop_observed_since(requested_at):
-                self.pid_file.unlink(missing_ok=True)
-                self.stop_file.unlink(missing_ok=True)
+                safe_unlink(self.pid_file)
+                safe_unlink(self.stop_file)
                 return True, f"{self.name} остановлен по stop-file."
             time.sleep(1)
         try:
@@ -561,8 +587,8 @@ class HunterAccount:
             pass
         time.sleep(1)
         if not pid_exists(pid):
-            self.pid_file.unlink(missing_ok=True)
-            self.stop_file.unlink(missing_ok=True)
+            safe_unlink(self.pid_file)
+            safe_unlink(self.stop_file)
             return True, f"{self.name} остановлен принудительно."
         return True, f"{self.name}: отправил принудительную остановку после ожидания."
 
@@ -1168,29 +1194,38 @@ class ControlBot:
 
     def monitor_loop(self, chat_id: Any, index: int, message_id: Any) -> None:
         account = self.accounts[index]
+        thread_key = None
+        try:
+            thread_key = (str(chat_id), int(message_id))
+        except (TypeError, ValueError):
+            pass
         try:
             draft_id = (index + 1) * 100_000_000 + int(message_id)
         except (TypeError, ValueError):
             draft_id = index + 1
-        while True:
-            try:
-                self.api.send_chat_action(chat_id, "typing")
-                self.api.send_message_draft(chat_id, draft_id, account.draft_text())
-                self.emit_new_events(chat_id, index)
-                self.api.edit_message(
-                    chat_id,
-                    message_id,
-                    account.monitor_text(),
-                    self.monitor_keyboard(index),
-                    parse_mode="HTML",
-                )
-            except TelegramError as exc:
-                print(f"Live monitor update failed: {exc}", file=sys.stderr)
-            except Exception:
-                traceback.print_exc()
-            if not account.is_running():
-                return
-            time.sleep(max(2.0, self.live_log_interval))
+        try:
+            while True:
+                try:
+                    self.api.send_chat_action(chat_id, "typing")
+                    self.api.send_message_draft(chat_id, draft_id, account.draft_text())
+                    self.emit_new_events(chat_id, index)
+                    self.api.edit_message(
+                        chat_id,
+                        message_id,
+                        account.monitor_text(),
+                        self.monitor_keyboard(index),
+                        parse_mode="HTML",
+                    )
+                except TelegramError as exc:
+                    print(f"Live monitor update failed: {exc}", file=sys.stderr)
+                except Exception:
+                    traceback.print_exc()
+                if not account.is_running():
+                    return
+                time.sleep(max(2.0, self.live_log_interval))
+        finally:
+            if thread_key is not None:
+                self.monitor_threads.pop(thread_key, None)
 
     # ── Add-account wizard ────────────────────────────────────────────────────
 
@@ -1265,7 +1300,7 @@ class ControlBot:
     def finish_add_wizard(self, chat_id: Any, state: Dict[str, Any], doc: Dict[str, Any]) -> None:
         key = str(chat_id)
         base_dir = self.config_path.parent
-        n = len(self.accounts) + 1
+        key_path, cfg_path = next_account_files(base_dir, len(self.accounts) + 1)
 
         # Save sa-key file
         key_data = self.api.download_file(str(doc.get("file_id") or ""))
@@ -1273,7 +1308,6 @@ class ControlBot:
             json.loads(key_data)
         except json.JSONDecodeError as exc:
             raise ValueError("Файл не является валидным JSON") from exc
-        key_path = base_dir / f"sa-key{n}.json"
         key_path.write_bytes(key_data)
 
         # Build new config from existing one as template
@@ -1295,7 +1329,6 @@ class ControlBot:
                 "iam_token_env": "YC_IAM_TOKEN",
             },
         })
-        cfg_path = base_dir / f"config{n}.json"
         cfg_path.write_text(json.dumps(template_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Add account to telegram_bot_config.json
@@ -1312,7 +1345,7 @@ class ControlBot:
         }
         accounts_list.append(new_account)
         bot_cfg["accounts"] = accounts_list
-        self.config_path.write_text(json.dumps(bot_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(self.config_path, bot_cfg)
 
         # Reload accounts in-place
         default_python = str(bot_cfg.get("python") or sys.executable)
