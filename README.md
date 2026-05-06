@@ -9,7 +9,7 @@
   <img alt="App" src="https://img.shields.io/badge/app-Redroller.exe-red">
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-green">
   <img alt="Secrets" src="https://img.shields.io/badge/secrets-encrypted-critical">
-  <img alt="Status" src="https://img.shields.io/badge/status-casino%20branch-orange">
+  <img alt="Status" src="https://img.shields.io/badge/status-Yandex%20Cloud%20baseline-orange">
 </p>
 
 ---
@@ -427,6 +427,18 @@ Yandex Cloud API
 ```
 
 Пользователь работает с кнопками и формами. Внутренний JSON и runtime-файлы приложение создаёт само.
+
+---
+
+## 🧭 Для разработчиков и агентов
+
+README остаётся главным пользовательским входом в проект. Внутренний план
+развития, карта модулей и правила обмена PR лежат отдельно:
+
+- [docs/ROADMAP.md](docs/ROADMAP.md) — куда Redroller развивается после Yandex Cloud;
+- [docs/AGENT_MAP.md](docs/AGENT_MAP.md) — зоны ответственности людей и агентов;
+- [AGENTS.md](AGENTS.md) — краткая инструкция перед изменениями;
+- [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) — чеклист для PR.
 
 ---
 
