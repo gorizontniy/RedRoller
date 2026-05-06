@@ -1102,6 +1102,13 @@ class IpHunter:
                     done = int(self.state.get("cloud_recreations_done", 0)) + 1
                     self.state["cloud_recreations_done"] = done
                     self.persist_state()
+                else:
+                    # Service cloud is reused — only delete the working folder.
+                    if folder_id:
+                        self.submit_folder_delete(folder_id)
+                        self.state.pop("hybrid_folder_id", None)
+                        self.state.pop("current_folder_id", None)
+                        self.persist_state()
                 self.sleep_backoff(float(self.config.get("cloud_iteration_sleep_seconds", 45)))
                 backoff = base_backoff
             except RateLimitHit as exc:
@@ -1160,9 +1167,13 @@ class IpHunter:
         if folder_id:
             if not explicit_folder_id and not self.saved_folder_is_usable(folder_id, cloud_id):
                 LOGGER.warning(
-                    "Saved folder %s is not usable; creating a fresh working folder.",
+                    "Saved folder %s is not usable; deleting it and creating a fresh working folder.",
                     folder_id,
                 )
+                try:
+                    self.submit_folder_delete(folder_id)
+                except Exception as _del_exc:  # noqa: BLE001
+                    LOGGER.warning("Could not delete stale folder %s: %s", folder_id, _del_exc)
                 self.state.pop("hybrid_folder_id", None)
                 self.state.pop("current_folder_id", None)
                 self.persist_state()

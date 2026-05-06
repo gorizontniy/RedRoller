@@ -4,7 +4,7 @@
   "allow_any_chat": false,
   "poll_timeout_seconds": 25,
   "stop_timeout_seconds": 45,
-  "live_log_interval_seconds": 5,
+  "live_log_interval_seconds": 20,
   "drop_pending_updates_on_start": true,
   "offset_file": ".telegram_bot.offset",
   "python": "",
