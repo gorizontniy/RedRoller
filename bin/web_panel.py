@@ -135,6 +135,14 @@ def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def safe_unlink(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def backup_sqlite_before_schema_change(db_path: Path) -> Optional[Path]:
     if not db_path.exists():
         return None
@@ -748,12 +756,17 @@ class WebPanelApp:
         run["stopped_at"] = utc_now()
         run["exit_code"] = exit_code
         self._processes.pop(int(run["id"]), None)
+        safe_unlink(Path(str(run["stop_file"])))
+        safe_unlink(Path(str(run["recreate_file"])))
 
     def start_spin(self, account_id: int) -> Dict[str, Any]:
         active_run = self.latest_run(account_id, only_active=True)
         if active_run:
             return {"ok": True, "run": active_run, "message": "Ротация уже запущена."}
         paths = self.build_runtime_files(account_id)
+        for control_path in (paths["stop"], paths["recreate"]):
+            if not safe_unlink(control_path) and control_path.exists():
+                raise WebPanelError(f"Не удалось очистить старый control-file: {control_path}")
         command = [
             self.python,
             str(self.root / "yc_ip_hunter.py"),

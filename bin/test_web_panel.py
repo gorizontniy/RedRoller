@@ -552,11 +552,17 @@ class WebPanelTests(unittest.TestCase):
         try:
             app = make_app(root)
             account = app.create_account(sample_payload())
+            paths = app.runtime_paths(account["id"])
+            paths["base"].mkdir(parents=True, exist_ok=True)
+            paths["stop"].write_text("stop\n", encoding="utf-8")
+            paths["recreate"].write_text("recreate\n", encoding="utf-8")
 
             with mock.patch.object(web.subprocess, "Popen", return_value=FakeProcess()) as popen:
                 result = app.start_spin(account["id"])
 
             self.assertTrue(result["ok"])
+            self.assertFalse(paths["stop"].exists())
+            self.assertFalse(paths["recreate"].exists())
             command = popen.call_args.args[0]
             self.assertEqual(command[0], "python")
             self.assertIn("yc_ip_hunter.py", command[1])
@@ -564,6 +570,33 @@ class WebPanelTests(unittest.TestCase):
             self.assertIn("--yes-delete-cloud", command)
             self.assertIn("--stop-file", command)
             self.assertIn("--recreate-file", command)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_reconcile_run_removes_control_files_after_stop(self):
+        root = fresh_test_dir("web-reconcile-control")
+
+        class FinishedProcess:
+            pid = 4321
+
+            def poll(self):
+                return 0
+
+        try:
+            app = make_app(root)
+            account = app.create_account(sample_payload())
+            with mock.patch.object(web.subprocess, "Popen", return_value=FinishedProcess()):
+                result = app.start_spin(account["id"])
+            run = result["run"]
+            stop_path = Path(run["stop_file"])
+            recreate_path = Path(run["recreate_file"])
+            stop_path.write_text("stop\n", encoding="utf-8")
+            recreate_path.write_text("recreate\n", encoding="utf-8")
+
+            app.latest_run(account["id"])
+
+            self.assertFalse(stop_path.exists())
+            self.assertFalse(recreate_path.exists())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

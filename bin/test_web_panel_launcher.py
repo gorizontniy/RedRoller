@@ -1,4 +1,6 @@
 import importlib.util
+import base64
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -45,7 +47,10 @@ class WebPanelLauncherTests(unittest.TestCase):
         self.assertIn("Remove-Item -LiteralPath $ReleasePath -Recurse -Force", script)
         self.assertIn('Join-Path $ReleasePath "$Name.exe"', script)
         self.assertIn('Join-Path $ReleasePath "README.txt"', script)
-        self.assertIn("%LOCALAPPDATA%\\IP_ROTATOR.V1\\.web-runtime", script)
+        match = re.search(r'\$ReadmeBase64 = "([^"]+)"', script)
+        self.assertIsNotNone(match)
+        readme = base64.b64decode(match.group(1)).decode("utf-8")
+        self.assertIn("%LOCALAPPDATA%\\IP_ROTATOR.V1\\.web-runtime", readme)
 
     def test_panel_url_helpers(self):
         self.assertEqual(launcher.panel_url("127.0.0.1", 8787), "http://127.0.0.1:8787")
