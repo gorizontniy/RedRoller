@@ -335,6 +335,15 @@ python .\bin\telegram_bot.py --config .\bin\telegram_bot_config.json
 Локальная веб-панель запускается поверх того же `yc_ip_hunter.py`, хранит
 несколько аккаунтов в SQLite и показывает живой статус IP-рулетки:
 
+Готовый Windows exe лежит в корне репозитория:
+
+```powershell
+.\Redroller.exe
+```
+
+Файл `Redroller.exe` коммитится намеренно, чтобы после `git pull` приложение
+можно было запустить сразу без локальной сборки.
+
 ```powershell
 python .\bin\web_panel.py --host 127.0.0.1 --port 8787
 ```
