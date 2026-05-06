@@ -1,6 +1,8 @@
 config.json
 config.*.json
 !config.example.json
+!bin/config.example.json
+IP_ROTATOR.V1.exe
 telegram_bot_config.json
 .telegram_bot.offset
 sa-key.json
