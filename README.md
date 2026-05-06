@@ -54,7 +54,7 @@ Copy-Item .\bin\config.example.json .\bin\config.json
 ```text
 yc_ip_hunter/
   README.md
-  IP_ROTATOR.V1.exe
+  Redroller.exe
   bin/
     yc_ip_hunter.py
     config.json
@@ -330,7 +330,7 @@ python .\bin\telegram_bot.py --config .\bin\telegram_bot_config.json
 старые pending updates при первом запуске. Это нужно, чтобы после падения или
 перезапуска бот не выполнял старые нажатия кнопок повторно.
 
-## Веб-панель IP_ROTATOR.V1
+## Веб-панель Redroller
 
 Локальная веб-панель запускается поверх того же `yc_ip_hunter.py`, хранит
 несколько аккаунтов в SQLite и показывает живой статус IP-рулетки:
@@ -351,7 +351,8 @@ python .\bin\web_panel.py --host 127.0.0.1 --port 8787
 охотничьи облака. Изоляция сохраняется отдельной кнопкой для выбранного
 аккаунта и не затирается при обычном редактировании аккаунта.
 
-В форме аккаунта есть **Режим крутки**:
+В форме аккаунта сначала показывается выбор режима. После выбора раскрываются
+только нужные поля конфигурации:
 
 - **Крутка облаков** - основной flow. Панель очищает `target_cloud_id` и
   `folder_id`, а runtime-конфиг запускается как `rotation_mode: "hybrid"` с
@@ -386,14 +387,14 @@ python .\bin\web_panel_launcher.py
 
 ```powershell
 .\bin\build_web_panel_exe.ps1
-.\IP_ROTATOR.V1.exe
+.\Redroller.exe
 ```
 
-Exe хранит runtime-данные в `%LOCALAPPDATA%\IP_ROTATOR.V1\.web-runtime`, чтобы
+Exe хранит runtime-данные в `%LOCALAPPDATA%\Redroller\.web-runtime`, чтобы
 SQLite, `secret.key`, логи и профиль браузера не лежали рядом с exe.
-Корень папки остаётся пользовательским: `IP_ROTATOR.V1.exe` и `README.md`;
+Корень папки остаётся пользовательским: `Redroller.exe` и `README.md`;
 технические файлы проекта лежат в `bin\`. Папка `dist\release` пересоздаётся
-при сборке и содержит `IP_ROTATOR.V1.exe` и свежий `README.txt`.
+при сборке и содержит `Redroller.exe` и свежий `README.txt`.
 
 ## Запуск
 

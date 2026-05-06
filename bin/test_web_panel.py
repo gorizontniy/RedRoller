@@ -242,7 +242,7 @@ class WebPanelTests(unittest.TestCase):
 
             self.assertEqual(app.test_telegram_settings(), {"ok": True})
             self.assertEqual(len(calls), 1)
-            self.assertIn("IP_ROTATOR.V1", calls[0])
+            self.assertIn("Redroller", calls[0])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -670,6 +670,9 @@ class WebPanelTests(unittest.TestCase):
         self.assertIn("Режим крутки", index)
         self.assertIn("Крутка облаков", index)
         self.assertIn("Крутка 1 проекта", index)
+        self.assertIn("REDROLLER", index)
+        self.assertIn("modeConfig", index)
+        self.assertIn("mode-card", index)
         self.assertIn("Отправить тест", index)
         self.assertIn("isolationAccountSelect", index)
         self.assertIn("Зоны ролла", index)

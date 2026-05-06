@@ -185,7 +185,7 @@ def pid_exists(pid: int) -> bool:
 
 
 def load_or_create_fernet(runtime_dir: Path) -> Fernet:
-    env_key = os.getenv("IP_ROTATOR_SECRET_KEY")
+    env_key = os.getenv("REDROLLER_SECRET_KEY") or os.getenv("IP_ROTATOR_SECRET_KEY")
     if env_key:
         return Fernet(env_key.encode("ascii"))
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -418,7 +418,7 @@ class WebPanelApp:
             raise WebPanelError(f"Не удалось отправить Telegram-сообщение: {exc}") from exc
 
     def test_telegram_settings(self) -> Dict[str, Any]:
-        self.send_telegram_message("IP_ROTATOR.V1: тестовое Telegram-уведомление")
+        self.send_telegram_message("Redroller: тестовое Telegram-уведомление")
         return {"ok": True}
 
     def default_zones(self) -> List[str]:
@@ -1163,7 +1163,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     db_path = Path(args.db).resolve() if args.db else runtime_dir / DEFAULT_DB_NAME
     app = WebPanelApp(runtime_dir=runtime_dir, db_path=db_path)
     server = WebPanelServer((args.host, args.port), app)
-    print(f"IP_ROTATOR.V1 web panel: http://{args.host}:{args.port}")
+    print(f"Redroller web panel: http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

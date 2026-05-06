@@ -48,18 +48,21 @@ function setZones(zones) {
 
 function selectedRollMode() {
   const checked = document.querySelector("input[name='rollMode']:checked");
-  return checked ? checked.value : "cloud";
+  return checked ? checked.value : "";
 }
 
 function setRollMode(mode) {
-  const value = mode === "project" ? "project" : "cloud";
+  const value = mode === "project" ? "project" : mode === "cloud" ? "cloud" : "";
   document.querySelectorAll("input[name='rollMode']").forEach((item) => {
     item.checked = item.value === value;
   });
+  $("modeConfig").classList.toggle("hidden", !value);
   const projectMode = value === "project";
   document.querySelectorAll(".project-mode-field").forEach((item) => {
     item.classList.toggle("hidden", !projectMode);
   });
+  $("cloudModeNote").classList.toggle("hidden", value !== "cloud");
+  $("modeSummary").textContent = value === "project" ? "крутка 1 проекта" : value === "cloud" ? "крутка облаков" : "режим не выбран";
   $("targetCloudId").required = projectMode;
   $("folderId").required = projectMode;
   if (!projectMode) {
@@ -69,9 +72,13 @@ function setRollMode(mode) {
 }
 
 function formPayload() {
+  const rollMode = selectedRollMode();
+  if (!rollMode) {
+    throw new Error("Сначала выберите режим крутки");
+  }
   return {
     name: $("name").value,
-    roll_mode: selectedRollMode(),
+    roll_mode: rollMode,
     organization_id: $("organizationId").value,
     billing_account_id: $("billingAccountId").value,
     service_cloud_id: $("serviceCloudId").value,
@@ -89,7 +96,7 @@ function resetForm() {
   $("accountId").value = "";
   $("accountForm").reset();
   setZones(["ru-central1-a", "ru-central1-e"]);
-  setRollMode("cloud");
+  setRollMode("");
   $("serviceAccountJson").required = true;
 }
 
@@ -149,7 +156,7 @@ function renderAccounts() {
   if (!state.accounts.length) {
     const empty = document.createElement("div");
     empty.className = "account-card";
-    empty.innerHTML = "<h3>Аккаунтов нет</h3><div class='meta'>Добавьте данные Yandex Cloud, чтобы подготовить ротацию.</div>";
+    empty.innerHTML = "<h3>Аккаунтов нет</h3><div class='meta'>Выберите режим в форме ниже и добавьте данные Yandex Cloud, чтобы подготовить ротацию.</div>";
     list.appendChild(empty);
     return;
   }

@@ -3,6 +3,7 @@ config.*.json
 !config.example.json
 !bin/config.example.json
 IP_ROTATOR.V1.exe
+Redroller.exe
 telegram_bot_config.json
 .telegram_bot.offset
 sa-key.json

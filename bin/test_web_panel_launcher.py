@@ -1,6 +1,7 @@
 import importlib.util
 import base64
 import re
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -50,7 +51,7 @@ class WebPanelLauncherTests(unittest.TestCase):
         match = re.search(r'\$ReadmeBase64 = "([^"]+)"', script)
         self.assertIsNotNone(match)
         readme = base64.b64decode(match.group(1)).decode("utf-8")
-        self.assertIn("%LOCALAPPDATA%\\IP_ROTATOR.V1\\.web-runtime", readme)
+        self.assertIn("%LOCALAPPDATA%\\Redroller\\.web-runtime", readme)
 
     def test_panel_url_helpers(self):
         self.assertEqual(launcher.panel_url("127.0.0.1", 8787), "http://127.0.0.1:8787")
@@ -107,8 +108,22 @@ class WebPanelLauncherTests(unittest.TestCase):
 
         self.assertEqual(
             runtime_dir,
-            Path(r"C:\Users\tester\AppData\Local") / "IP_ROTATOR.V1" / ".web-runtime",
+            Path(r"C:\Users\tester\AppData\Local") / "Redroller" / ".web-runtime",
         )
+
+    def test_frozen_default_runtime_dir_migrates_legacy_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_app_data = Path(tmp)
+            legacy = local_app_data / "IP_ROTATOR.V1" / ".web-runtime"
+            legacy.mkdir(parents=True)
+            (legacy / "ip_rotator.sqlite3").write_text("db", encoding="utf-8")
+
+            with mock.patch.object(launcher.sys, "frozen", True, create=True), \
+                mock.patch.dict(launcher.os.environ, {"LOCALAPPDATA": str(local_app_data)}):
+                runtime_dir = launcher.default_runtime_dir()
+
+            self.assertEqual(runtime_dir, local_app_data / "Redroller" / ".web-runtime")
+            self.assertEqual((runtime_dir / "ip_rotator.sqlite3").read_text(encoding="utf-8"), "db")
 
 
 if __name__ == "__main__":

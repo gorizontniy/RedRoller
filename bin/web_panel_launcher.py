@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Desktop-лаунчер для локальной панели IP_ROTATOR.V1.
+"""Desktop-лаунчер для локальной панели Redroller.
 
 Лаунчер управляет тем, что сам запустил: если он поднял web_panel.py, то
 остановит сервер после закрытия окна приложения. Если панель уже запущена на
@@ -27,15 +27,33 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 ROOT = RESOURCE_ROOT
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
-APP_NAME = "IP_ROTATOR.V1"
+APP_NAME = "Redroller"
+LEGACY_APP_NAME = "IP_ROTATOR.V1"
+
+
+def local_app_data_dir() -> Path:
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data)
+    return Path.home() / "AppData" / "Local"
+
+
+def migrate_legacy_runtime(runtime_dir: Path) -> None:
+    legacy_dir = local_app_data_dir() / LEGACY_APP_NAME / ".web-runtime"
+    if runtime_dir.exists() or not legacy_dir.exists():
+        return
+    runtime_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copytree(legacy_dir, runtime_dir)
+    except OSError:
+        return
 
 
 def default_runtime_dir() -> Path:
     if getattr(sys, "frozen", False):
-        local_app_data = os.getenv("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / APP_NAME / ".web-runtime"
-        return Path.home() / "AppData" / "Local" / APP_NAME / ".web-runtime"
+        runtime_dir = local_app_data_dir() / APP_NAME / ".web-runtime"
+        migrate_legacy_runtime(runtime_dir)
+        return runtime_dir
     return APP_DIR / ".web-runtime"
 
 
@@ -76,7 +94,7 @@ def python_command() -> List[str]:
     py_launcher = shutil.which("py")
     if py_launcher:
         return [py_launcher, "-3"]
-    raise RuntimeError("Для запуска серверной части IP-ротатора нужен установленный Python.")
+    raise RuntimeError("Для запуска серверной части Redroller нужен установленный Python.")
 
 
 def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
@@ -204,7 +222,7 @@ def run_launcher(host: str, port: int, runtime_dir: Path) -> int:
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Запустить IP_ROTATOR.V1 как desktop-приложение.")
+    parser = argparse.ArgumentParser(description="Запустить Redroller как desktop-приложение.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--runtime-dir", default=str(default_runtime_dir()))
