@@ -20,6 +20,7 @@
         <button class="tab-btn active" data-tab="accounts">Аккаунты</button>
         <button class="tab-btn" data-tab="docs">Документация</button>
         <button class="tab-btn" data-tab="isolation">Изоляция облака</button>
+        <button class="tab-btn" data-tab="telegram">Telegram</button>
       </nav>
 
       <section id="tab-accounts" class="tab-panel active">
@@ -49,12 +50,17 @@
             <span>ID сервисного облака</span>
             <input id="serviceCloudId" required placeholder="b1g...">
           </label>
-          <label>
-            <span>ID целевого облака только для folder-режима</span>
-            <input id="targetCloudId" placeholder="для hybrid оставьте пустым">
+          <fieldset class="zone-picker mode-picker">
+            <legend>Режим крутки</legend>
+            <label><input type="radio" name="rollMode" value="cloud" checked> Крутка облаков</label>
+            <label><input type="radio" name="rollMode" value="project"> Крутка 1 проекта</label>
+          </fieldset>
+          <label class="project-mode-field hidden">
+            <span>ID целевого облака</span>
+            <input id="targetCloudId" placeholder="b1g...">
           </label>
-          <label>
-            <span>Folder ID необязательно</span>
+          <label class="project-mode-field hidden">
+            <span>Folder ID проекта</span>
             <input id="folderId" placeholder="f1x...">
           </label>
 
@@ -140,6 +146,36 @@
             <button type="button" id="saveIsolationBtn" class="primary-btn">Сохранить изоляцию</button>
           </div>
           <p class="muted">Разрешены только латинские буквы нижнего регистра, цифры и дефис. Если хотя бы один ID некорректный, список не сохранится.</p>
+        </article>
+      </section>
+
+      <section id="tab-telegram" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Telegram</h2>
+          <p class="muted">Уведомления общие для всей панели. При успешном выпадении IP скрипт отправит сообщение в этот чат.</p>
+          <form id="telegramForm" class="credential-form embedded-form">
+            <label class="checkbox-row">
+              <input type="checkbox" id="telegramEnabled">
+              <span>Включить Telegram-уведомления</span>
+            </label>
+            <label>
+              <span>Chat ID</span>
+              <input id="telegramChatId" placeholder="123456789">
+            </label>
+            <label>
+              <span>Bot token</span>
+              <input id="telegramToken" type="password" placeholder="123456:ABCDEF">
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="clearTelegramToken">
+              <span>Удалить сохранённый token</span>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary-btn">Сохранить Telegram</button>
+              <button type="button" id="testTelegramBtn" class="secondary-btn">Отправить тест</button>
+            </div>
+          </form>
+          <p class="muted">Создайте бота через BotFather, вставьте token, затем узнайте chat_id через getUpdates или специального helper-бота. Если token уже сохранён, поле можно оставить пустым.</p>
         </article>
       </section>
     </section>

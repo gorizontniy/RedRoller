@@ -19,7 +19,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -33,9 +35,10 @@ DEFAULT_DB_NAME = "ip_rotator.sqlite3"
 DEFAULT_WEB_DIR = ROOT / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_ZONES = ["ru-central1-a", "ru-central1-b", "ru-central1-c", "ru-central1-d", "ru-central1-e"]
 YC_LIKE_ID_RE = re.compile(r"^[a-z0-9-]{6,64}$")
+ROLL_MODES = {"cloud", "project"}
 
 
 class WebPanelError(RuntimeError):
@@ -64,6 +67,20 @@ def parse_json_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     raise WebPanelError("Ожидался список или строки, разделённые переносами.")
+
+
+def config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
 
 
 def unique_text_list(values: List[str]) -> List[str]:
@@ -116,6 +133,15 @@ def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def backup_sqlite_before_schema_change(db_path: Path) -> Optional[Path]:
+    if not db_path.exists():
+        return None
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = db_path.with_name(f"{db_path.name}.backup-{stamp}")
+    backup_path.write_bytes(db_path.read_bytes())
+    return backup_path
 
 
 def mask_id(value: Any) -> str:
@@ -190,6 +216,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             target_ips_json TEXT NOT NULL DEFAULT '[]',
             zones_json TEXT NOT NULL DEFAULT '[]',
             protected_cloud_ids_json TEXT NOT NULL DEFAULT '[]',
+            roll_mode TEXT NOT NULL DEFAULT 'cloud',
             service_account_json_encrypted BLOB NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
@@ -231,6 +258,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "accounts", "zones_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, "accounts", "protected_cloud_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "accounts", "roll_mode", "TEXT NOT NULL DEFAULT 'cloud'")
     conn.execute(
         "INSERT OR REPLACE INTO settings(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -262,8 +290,17 @@ class WebPanelApp:
         self.fernet = load_or_create_fernet(self.runtime_dir)
         self._lock = threading.Lock()
         self._processes: Dict[int, subprocess.Popen[Any]] = {}
+        self.backup_database_if_needed()
         with self.connect() as conn:
             init_db(conn)
+
+    def backup_database_if_needed(self) -> None:
+        if not self.db_path.exists():
+            return
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(accounts)")}
+        if "roll_mode" not in columns:
+            backup_sqlite_before_schema_change(self.db_path)
 
     @contextlib.contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -290,6 +327,92 @@ class WebPanelApp:
         except InvalidToken as exc:
             raise WebPanelError("Не удалось расшифровать сохранённый JSON-ключ сервисного аккаунта.") from exc
 
+    def encrypt_text(self, text: str) -> bytes:
+        return self.fernet.encrypt(text.encode("utf-8"))
+
+    def decrypt_text(self, token: bytes) -> str:
+        try:
+            return self.fernet.decrypt(token).decode("utf-8")
+        except InvalidToken as exc:
+            raise WebPanelError("Could not decrypt saved settings.") from exc
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return str(row["value"]) if row is not None else default
+
+    def set_settings(self, values: Dict[str, str]) -> None:
+        with self._lock, self.connect() as conn:
+            for key, value in values.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                    (key, value),
+                )
+            conn.commit()
+
+    def telegram_settings(self, include_token: bool = False) -> Dict[str, Any]:
+        token_encrypted = self.get_setting("telegram_bot_token_encrypted", "")
+        result: Dict[str, Any] = {
+            "enabled": config_bool(self.get_setting("telegram_enabled", "false"), default=False),
+            "chat_id": self.get_setting("telegram_chat_id", ""),
+            "has_bot_token": bool(token_encrypted),
+        }
+        if include_token:
+            result["bot_token"] = self.decrypt_text(token_encrypted.encode("utf-8")) if token_encrypted else ""
+        return result
+
+    def public_telegram_settings(self) -> Dict[str, Any]:
+        return self.telegram_settings(include_token=False)
+
+    def update_telegram_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.telegram_settings(include_token=False)
+        enabled = config_bool(payload.get("enabled"), default=False)
+        chat_id = str(payload.get("chat_id") or payload.get("chatId") or "").strip()
+        token = str(payload.get("bot_token") or payload.get("botToken") or "").strip()
+        clear_token = config_bool(payload.get("clear_bot_token") or payload.get("clearBotToken"), default=False)
+        values = {
+            "telegram_enabled": "true" if enabled else "false",
+            "telegram_chat_id": chat_id,
+            "telegram_updated_at": utc_now(),
+        }
+        if clear_token:
+            values["telegram_bot_token_encrypted"] = ""
+        elif token:
+            values["telegram_bot_token_encrypted"] = self.encrypt_text(token).decode("ascii")
+        elif not current.get("has_bot_token"):
+            values["telegram_bot_token_encrypted"] = ""
+        self.set_settings(values)
+        return {"ok": True, "telegram": self.public_telegram_settings()}
+
+    def send_telegram_message(self, text: str) -> bool:
+        settings = self.telegram_settings(include_token=True)
+        token = str(settings.get("bot_token") or "").strip()
+        chat_id = str(settings.get("chat_id") or "").strip()
+        if not token or not chat_id:
+            raise WebPanelError("Укажите Telegram bot token и chat_id.")
+        url = f"https://api.telegram.org/bot{urllib.parse.quote(token, safe='')}/sendMessage"
+        body = json.dumps(
+            {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return 200 <= int(response.status) < 300
+        except urllib.error.HTTPError as exc:
+            raise WebPanelError(f"Telegram вернул ошибку {exc.code}.") from exc
+        except OSError as exc:
+            raise WebPanelError(f"Не удалось отправить Telegram-сообщение: {exc}") from exc
+
+    def test_telegram_settings(self) -> Dict[str, Any]:
+        self.send_telegram_message("IP_ROTATOR.V1: тестовое Telegram-уведомление")
+        return {"ok": True}
+
     def default_zones(self) -> List[str]:
         template = read_json(self.root / "config.example.json")
         zones = template.get("zones") or []
@@ -310,6 +433,16 @@ class WebPanelApp:
             raise WebPanelError("Укажите ID платёжного аккаунта.")
         if not service_cloud_id:
             raise WebPanelError("Укажите ID сервисного облака.")
+        roll_mode = str(payload.get("roll_mode") or payload.get("rollMode") or "cloud").strip().lower()
+        if roll_mode not in ROLL_MODES:
+            raise WebPanelError("roll_mode must be 'cloud' or 'project'.")
+        target_cloud_id = str(payload.get("target_cloud_id") or payload.get("targetCloudId") or "").strip()
+        folder_id = str(payload.get("folder_id") or payload.get("folderId") or "").strip()
+        if roll_mode == "cloud":
+            target_cloud_id = ""
+            folder_id = ""
+        elif not target_cloud_id or not folder_id:
+            raise WebPanelError("For project roll mode, target_cloud_id and folder_id are required.")
         service_account_json = str(
             payload.get("service_account_json") or payload.get("serviceAccountJson") or ""
         ).strip()
@@ -326,8 +459,9 @@ class WebPanelApp:
             "organization_id": org_id,
             "billing_account_id": billing_id,
             "service_cloud_id": service_cloud_id,
-            "target_cloud_id": str(payload.get("target_cloud_id") or payload.get("targetCloudId") or "").strip(),
-            "folder_id": str(payload.get("folder_id") or payload.get("folderId") or "").strip(),
+            "roll_mode": roll_mode,
+            "target_cloud_id": target_cloud_id,
+            "folder_id": folder_id,
             "target_cidrs_json": json.dumps(parse_json_list(payload.get("target_cidrs") or payload.get("targetCidrs"))),
             "target_ips_json": json.dumps(parse_json_list(payload.get("target_ips") or payload.get("targetIps"))),
             "zones_json": json.dumps(zones),
@@ -343,6 +477,7 @@ class WebPanelApp:
             "organization_id": row["organization_id"],
             "billing_account_id": row["billing_account_id"],
             "service_cloud_id": row["service_cloud_id"],
+            "roll_mode": row["roll_mode"] or "cloud",
             "target_cloud_id": row["target_cloud_id"],
             "folder_id": row["folder_id"],
             "organization_masked": mask_id(row["organization_id"]),
@@ -371,16 +506,17 @@ class WebPanelApp:
                 """
                 INSERT INTO accounts(
                     name, organization_id, billing_account_id, service_cloud_id,
-                    target_cloud_id, folder_id, target_cidrs_json, target_ips_json,
+                    roll_mode, target_cloud_id, folder_id, target_cidrs_json, target_ips_json,
                     zones_json, protected_cloud_ids_json,
                     service_account_json_encrypted, is_active, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     data["organization_id"],
                     data["billing_account_id"],
                     data["service_cloud_id"],
+                    data["roll_mode"],
                     data["target_cloud_id"],
                     data["folder_id"],
                     data["target_cidrs_json"],
@@ -408,6 +544,7 @@ class WebPanelApp:
                 "organization_id=?",
                 "billing_account_id=?",
                 "service_cloud_id=?",
+                "roll_mode=?",
                 "target_cloud_id=?",
                 "folder_id=?",
                 "target_cidrs_json=?",
@@ -420,6 +557,7 @@ class WebPanelApp:
                 data["organization_id"],
                 data["billing_account_id"],
                 data["service_cloud_id"],
+                data["roll_mode"],
                 data["target_cloud_id"],
                 data["folder_id"],
                 data["target_cidrs_json"],
@@ -530,9 +668,12 @@ class WebPanelApp:
         target_ips = json.loads(row["target_ips_json"] or "[]")
         zones = json.loads(row["zones_json"] or "[]") or self.default_zones()
         protected_cloud_ids = json.loads(row["protected_cloud_ids_json"] or "[]")
-        target_cloud_id = str(row["target_cloud_id"] or "")
+        roll_mode = str(row["roll_mode"] or "cloud")
+        target_cloud_id = str(row["target_cloud_id"] or "") if roll_mode == "project" else ""
+        folder_id = str(row["folder_id"] or "") if roll_mode == "project" else ""
         if target_cloud_id and target_cloud_id in protected_cloud_ids:
             raise WebPanelError("Целевое облако находится в изоляции. Уберите его из изоляции или очистите ID целевого облака.")
+        telegram = self.telegram_settings(include_token=True)
         config = dict(template)
         config.update(
             {
@@ -543,15 +684,24 @@ class WebPanelApp:
                 "service_cloud_id": row["service_cloud_id"],
                 "target_cloud_id": target_cloud_id,
                 "cloud_id": "",
-                "folder_id": row["folder_id"] or "",
+                "folder_id": folder_id,
                 "zone": zones[0],
                 "zones": zones,
                 "target_cidrs": target_cidrs,
                 "target_ips": target_ips,
                 "protected_cloud_ids": protected_cloud_ids,
+                "continue_after_success": True,
                 "auth": {
                     "service_account_key_file": paths["key"].name,
                     "iam_token_env": "YC_IAM_TOKEN",
+                },
+                "notifications": {
+                    "enabled": bool(telegram["enabled"]),
+                    "telegram": {
+                        "enabled": bool(telegram["enabled"]),
+                        "bot_token": str(telegram.get("bot_token") or ""),
+                        "chat_id": str(telegram.get("chat_id") or ""),
+                    },
                 },
                 "state_file": paths["state"].name,
                 "log_file": paths["log"].name,
@@ -715,6 +865,43 @@ class WebPanelApp:
                 )
             conn.commit()
 
+    def sync_auto_protected_clouds(self, account_id: int, run: Optional[Dict[str, Any]]) -> bool:
+        if not run:
+            return False
+        state_path = Path(str(run["state_path"]))
+        state = read_json(state_path)
+        auto_values = state.get("auto_protected_cloud_ids")
+        if not isinstance(auto_values, list):
+            return False
+        auto_ids = normalize_protected_cloud_ids(auto_values)
+        if not auto_ids:
+            if auto_values:
+                state["auto_protected_cloud_ids"] = []
+                write_json_atomic(state_path, state)
+            return False
+
+        changed = False
+        with self._lock, self.connect() as conn:
+            row = self.require_account(conn, account_id)
+            current = normalize_protected_cloud_ids(json.loads(row["protected_cloud_ids_json"] or "[]"))
+            merged = list(current)
+            seen = set(current)
+            for cloud_id in auto_ids:
+                if cloud_id not in seen:
+                    merged.append(cloud_id)
+                    seen.add(cloud_id)
+            if merged != current:
+                conn.execute(
+                    "UPDATE accounts SET protected_cloud_ids_json=?, updated_at=? WHERE id=?",
+                    (json.dumps(merged), utc_now(), account_id),
+                )
+                conn.commit()
+                changed = True
+
+        state["auto_protected_cloud_ids"] = []
+        write_json_atomic(state_path, state)
+        return changed
+
     def attempts_for_account(self, account_id: int, limit: int = 40) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -744,6 +931,8 @@ class WebPanelApp:
             }
         run = self.latest_run(int(account["id"]))
         self.sync_attempts(run)
+        if self.sync_auto_protected_clouds(int(account["id"]), run):
+            account = self.get_account(int(account["id"]))
         state = read_json(Path(str(run["state_path"]))) if run else {}
         attempts = self.attempts_for_account(int(account["id"]))
         current_ip = (
@@ -837,6 +1026,8 @@ class WebPanelHandler(BaseHTTPRequestHandler):
             path = parsed.path
             if path == "/api/accounts":
                 self.send_json({"accounts": self.app.list_accounts()})
+            elif path == "/api/settings/telegram":
+                self.send_json({"telegram": self.app.public_telegram_settings()})
             elif path == "/api/status":
                 self.send_json(self.app.status_payload())
             elif path == "/api/events":
@@ -851,6 +1042,9 @@ class WebPanelHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
             if path == "/api/accounts":
                 self.send_json({"account": self.app.create_account(self.read_json_body())}, status=201)
+                return
+            if path == "/api/settings/telegram/test":
+                self.send_json(self.app.test_telegram_settings())
                 return
             match = re.fullmatch(r"/api/accounts/(\d+)/(activate|spin|stop|recreate)", path)
             if not match:
@@ -875,6 +1069,9 @@ class WebPanelHandler(BaseHTTPRequestHandler):
             isolation_match = re.fullmatch(r"/api/accounts/(\d+)/isolation", path)
             if isolation_match:
                 self.send_json(self.app.update_account_isolation(int(isolation_match.group(1)), self.read_json_body()))
+                return
+            if path == "/api/settings/telegram":
+                self.send_json(self.app.update_telegram_settings(self.read_json_body()))
                 return
             match = re.fullmatch(r"/api/accounts/(\d+)", path)
             if not match:

@@ -287,6 +287,27 @@ textarea:focus {
   height: 18px;
 }
 
+.mode-picker {
+  grid-template-columns: 1fr;
+}
+
+.embedded-form {
+  border-style: solid;
+  background: var(--surface-container);
+}
+
+.checkbox-row {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-row input {
+  width: 20px;
+  height: 20px;
+}
+
 .primary-btn,
 .secondary-btn {
   border: 2px solid var(--primary);

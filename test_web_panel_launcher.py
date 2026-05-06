@@ -38,6 +38,15 @@ class FakeProcess:
 
 
 class WebPanelLauncherTests(unittest.TestCase):
+    def test_build_script_prepares_clean_release_folder(self):
+        script = Path(__file__).with_name("build_web_panel_exe.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$ReleasePath = Join-Path $FinalDistPath "release"', script)
+        self.assertIn("Remove-Item -LiteralPath $ReleasePath -Recurse -Force", script)
+        self.assertIn('Join-Path $ReleasePath "$Name.exe"', script)
+        self.assertIn('Join-Path $ReleasePath "README.txt"', script)
+        self.assertIn("%LOCALAPPDATA%\\IP_ROTATOR.V1\\.web-runtime", script)
+
     def test_panel_url_helpers(self):
         self.assertEqual(launcher.panel_url("127.0.0.1", 8787), "http://127.0.0.1:8787")
         self.assertEqual(

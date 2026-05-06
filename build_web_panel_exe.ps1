@@ -10,6 +10,7 @@ $WorkPath = Join-Path $BuildRoot "$Name-$PID"
 $SpecPath = Join-Path $BuildRoot "spec-$PID"
 $TempDistPath = Join-Path $BuildRoot "dist-$PID"
 $FinalDistPath = "dist"
+$ReleasePath = Join-Path $FinalDistPath "release"
 $WebPath = (Resolve-Path "web").Path
 $ConfigExamplePath = (Resolve-Path "config.example.json").Path
 $HunterPath = (Resolve-Path "yc_ip_hunter.py").Path
@@ -46,6 +47,29 @@ try {
     New-Item -ItemType Directory -Force -Path $FinalDistPath | Out-Null
     Copy-Item -LiteralPath $BuiltExe -Destination $FinalExe -Force
     Write-Host "Built $FinalExe"
+
+    if (Test-Path -LiteralPath $ReleasePath) {
+        Remove-Item -LiteralPath $ReleasePath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $ReleasePath | Out-Null
+    Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $ReleasePath "$Name.exe") -Force
+    @"
+IP_ROTATOR.V1
+
+Запуск:
+1. Откройте IP_ROTATOR.V1.exe.
+2. Заполните аккаунт Yandex Cloud в веб-панели.
+3. Выберите режим крутки и нажмите "КРУТИТЬ БСы".
+
+Где лежат данные:
+%LOCALAPPDATA%\IP_ROTATOR.V1\.web-runtime
+
+В этой папке хранятся SQLite, secret.key, runtime-config, state и логи.
+Не удаляйте secret.key, если хотите сохранить доступ к зашифрованным ключам.
+
+Если приложение не открывается, запустите exe ещё раз. Уже запущенная панель будет переиспользована.
+"@ | Set-Content -LiteralPath (Join-Path $ReleasePath "README.txt") -Encoding UTF8
+    Write-Host "Prepared $ReleasePath"
 }
 finally {
     foreach ($Path in @($WorkPath, $SpecPath, $TempDistPath)) {

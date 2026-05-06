@@ -4,8 +4,6 @@ import json
 import shutil
 import sys
 import unittest
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 
@@ -208,6 +206,7 @@ class IterationTests(unittest.TestCase):
 
         self.assertEqual(config["rotation_mode"], "hybrid")
         self.assertEqual(config["target_cloud_id"], "")
+        self.assertFalse(config["continue_after_success"])
 
     def test_config_example_uses_moderate_fast_delay_profile(self):
         config = json.loads(MODULE_PATH.with_name("config.example.json").read_text(encoding="utf-8"))
@@ -324,9 +323,11 @@ class IterationTests(unittest.TestCase):
     def test_hybrid_never_deletes_service_cloud(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.config = {"service_cloud_id": "service-cloud", "protected_cloud_ids": ["protected-cloud"]}
+        hunter.state = {"auto_protected_cloud_ids": ["auto-protected-cloud"]}
 
         self.assertFalse(hunter.can_delete_hybrid_cloud("service-cloud"))
         self.assertFalse(hunter.can_delete_hybrid_cloud("protected-cloud"))
+        self.assertFalse(hunter.can_delete_hybrid_cloud("auto-protected-cloud"))
         self.assertTrue(hunter.can_delete_hybrid_cloud("hunting-cloud"))
 
     def test_cloud_slot_count_ignores_fixed_and_unmanaged_clouds(self):
@@ -353,18 +354,22 @@ class IterationTests(unittest.TestCase):
             "protected_cloud_ids": ["protected-cloud"],
             "cloud_name_prefix": "ip-hunter",
         }
+        hunter.state = {"auto_protected_cloud_ids": ["managed-by-label"]}
         hunter.client = FakeClient()
 
-        self.assertEqual(hunter.count_non_service_clouds(), 2)
+        self.assertEqual(hunter.count_non_service_clouds(), 1)
 
     def test_protected_cloud_delete_is_rejected(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.config = {"protected_cloud_ids": ["protected-cloud"]}
+        hunter.state = {"auto_protected_cloud_ids": ["auto-protected-cloud"]}
         hunter.yes_delete_cloud = True
         hunter.dry_run = False
 
         with self.assertRaisesRegex(yc.ConfigError, "protected cloud"):
             hunter.ensure_managed_cloud_delete_allowed("protected-cloud")
+        with self.assertRaisesRegex(yc.ConfigError, "protected cloud"):
+            hunter.ensure_managed_cloud_delete_allowed("auto-protected-cloud")
 
     def test_cloud_delete_cleanup_settings_exist(self):
         text = MODULE_PATH.read_text(encoding="utf-8")
@@ -501,6 +506,29 @@ class StateTrackingTests(unittest.TestCase):
 
         self.assertEqual(hunter.client.deleted, [("addr-1", False)])
 
+    def test_cleanup_skips_auto_protected_cloud(self):
+        class FakeClient:
+            def __init__(self):
+                self.deleted = []
+
+            def delete_address(self, address_id, wait=True):
+                self.deleted.append((address_id, wait))
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.state = {
+            "auto_protected_cloud_ids": ["cloud-1"],
+            "addresses_by_cloud": {"cloud-1": [{"address_id": "addr-1"}]},
+        }
+        hunter.config = {}
+        hunter.client = FakeClient()
+        hunter.persist_state = lambda: None
+        hunter.sleep_backoff = lambda seconds: None
+
+        hunter.cleanup_cloud_addresses("cloud-1")
+
+        self.assertEqual(hunter.client.deleted, [])
+        self.assertNotIn("pre_delete_cleanups", hunter.state)
+
     def test_address_rate_limit_raises_rate_limit_hit(self):
         class FakeClient:
             def reserve_external_ipv4(self, **kwargs):
@@ -515,7 +543,7 @@ class StateTrackingTests(unittest.TestCase):
 
     def test_save_success_calls_notification(self):
         hunter = object.__new__(yc.IpHunter)
-        hunter.config = {"open_success_video": False}
+        hunter.config = {}
         hunter.state = {}
         hunter.persist_state = lambda: None
         called = []
@@ -533,38 +561,60 @@ class StateTrackingTests(unittest.TestCase):
 
         self.assertEqual(called, ["198.51.100.10"])
         self.assertEqual(hunter.state["success"]["ip"], "198.51.100.10")
+        self.assertNotIn("auto_protected_cloud_ids", hunter.state)
 
-    def test_open_success_video_can_be_disabled(self):
+    def test_save_success_auto_protects_cloud_when_continue_enabled(self):
         hunter = object.__new__(yc.IpHunter)
-        hunter.config = {"open_success_video": False}
+        hunter.config = {"continue_after_success": True}
+        hunter.state = {"auto_protected_cloud_ids": ["cloud-1"]}
+        hunter.persist_state = lambda: None
+        hunter.notify_success = lambda result: None
 
-        self.assertFalse(hunter.open_success_video())
+        hunter.save_success(
+            yc.AttemptResult(
+                ip="198.51.100.10",
+                zone="ru-central1-a",
+                address_id="addr-1",
+                cloud_id="cloud-1",
+                folder_id="folder-1",
+            )
+        )
+        hunter.save_success(
+            yc.AttemptResult(
+                ip="198.51.100.11",
+                zone="ru-central1-a",
+                address_id="addr-2",
+                cloud_id="cloud-2",
+                folder_id="folder-2",
+            )
+        )
 
-    def test_open_success_video_uses_default_url(self):
+        self.assertEqual(hunter.state["auto_protected_cloud_ids"], ["cloud-1", "cloud-2"])
+
+    def test_project_mode_success_blocks_after_auto_isolation(self):
         hunter = object.__new__(yc.IpHunter)
-        hunter.config = {}
-        opened = []
-        original_open = yc.webbrowser.open
-        yc.webbrowser.open = lambda url, new=0, autoraise=True: opened.append(
-            (url, new, autoraise)
-        ) or True
-        try:
-            self.assertTrue(hunter.open_success_video())
-        finally:
-            yc.webbrowser.open = original_open
+        hunter.config = {
+            "continue_after_success": True,
+            "roll_mode": "project",
+            "max_iterations": 1,
+            "cloud_iteration_sleep_seconds": 0,
+        }
+        hunter.state = {}
+        hunter.persist_state = lambda: None
+        hunter.notify_success = lambda result: None
+        hunter.iteration_numbers = lambda max_iterations: iter([1])
+        hunter.ensure_hybrid_address_scope = lambda iteration: ("cloud-1", "folder-1")
+        hunter.run_address_rotation_in_cloud = lambda cloud_id, folder_id, iteration: yc.AttemptResult(
+            ip="198.51.100.10",
+            zone="ru-central1-a",
+            address_id="addr-1",
+            cloud_id=cloud_id,
+            folder_id=folder_id,
+        )
 
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened[0][1:], (2, True))
-        self.assertTrue(opened[0][0].startswith("file:///"))
-
-    def test_success_video_launcher_sets_youtube_volume(self):
-        launch_url = yc.build_success_video_launcher(yc.SUCCESS_VIDEO_URL)
-        self.assertTrue(launch_url.startswith("file:///"))
-        parsed = urllib.parse.urlparse(launch_url)
-        html = Path(urllib.request.url2pathname(parsed.path)).read_text(encoding="utf-8")
-        self.assertIn("tiCIjTNARX8", html)
-        self.assertIn("PLCZl9PrJVBkSJGJi3zpDkbxy8X-BeUQvK", html)
-        self.assertIn("setVolume(100)", html)
+        self.assertEqual(hunter.run_hybrid_rotation(), 0)
+        self.assertEqual(hunter.state["auto_protected_cloud_ids"], ["cloud-1"])
+        self.assertEqual(hunter.state["status"], "blocked_by_project_isolation")
 
     def test_telegram_enabled_inside_disabled_parent_still_sends(self):
         hunter = object.__new__(yc.IpHunter)

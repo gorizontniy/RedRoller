@@ -4,6 +4,7 @@ const state = {
   editingId: null,
   selectedIsolationAccountId: null,
   isolationSaveToken: 0,
+  telegram: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -45,9 +46,32 @@ function setZones(zones) {
   });
 }
 
+function selectedRollMode() {
+  const checked = document.querySelector("input[name='rollMode']:checked");
+  return checked ? checked.value : "cloud";
+}
+
+function setRollMode(mode) {
+  const value = mode === "project" ? "project" : "cloud";
+  document.querySelectorAll("input[name='rollMode']").forEach((item) => {
+    item.checked = item.value === value;
+  });
+  const projectMode = value === "project";
+  document.querySelectorAll(".project-mode-field").forEach((item) => {
+    item.classList.toggle("hidden", !projectMode);
+  });
+  $("targetCloudId").required = projectMode;
+  $("folderId").required = projectMode;
+  if (!projectMode) {
+    $("targetCloudId").value = "";
+    $("folderId").value = "";
+  }
+}
+
 function formPayload() {
   return {
     name: $("name").value,
+    roll_mode: selectedRollMode(),
     organization_id: $("organizationId").value,
     billing_account_id: $("billingAccountId").value,
     service_cloud_id: $("serviceCloudId").value,
@@ -65,6 +89,7 @@ function resetForm() {
   $("accountId").value = "";
   $("accountForm").reset();
   setZones(["ru-central1-a", "ru-central1-e"]);
+  setRollMode("cloud");
   $("serviceAccountJson").required = true;
 }
 
@@ -72,6 +97,7 @@ function fillForm(account) {
   state.editingId = account.id;
   $("accountId").value = account.id;
   $("name").value = account.name || "";
+  setRollMode(account.roll_mode || "cloud");
   $("organizationId").value = account.organization_id || "";
   $("billingAccountId").value = account.billing_account_id || "";
   $("serviceCloudId").value = account.service_cloud_id || "";
@@ -89,6 +115,7 @@ function fillForm(account) {
 function accountCard(account) {
   const zones = (account.zones || []).join(", ") || "-";
   const protectedCount = (account.protected_cloud_ids || []).length;
+  const modeLabel = account.roll_mode === "project" ? "1 проект" : "Облака";
   const card = document.createElement("article");
   card.className = `account-card ${account.is_active ? "active" : ""}`;
   card.innerHTML = `
@@ -97,6 +124,7 @@ function accountCard(account) {
     <div class="meta">
       <div class="meta-row"><b>Сервисное облако:</b><span class="chip">${escapeHtml(account.service_cloud_masked)}</span></div>
       <div class="meta-row"><b>Организация:</b><span class="chip">${escapeHtml(account.organization_masked)}</span></div>
+      <div class="meta-row"><b>Режим:</b><span class="chip">${escapeHtml(modeLabel)}</span></div>
       <div class="meta-row"><b>Папка:</b><span class="chip">${escapeHtml(account.folder_masked)}</span></div>
       <div class="meta-row"><b>Зоны:</b><span class="chip">${escapeHtml(zones)}</span></div>
       <div class="meta-row"><b>Изоляция:</b><span class="chip">${protectedCount ? `${protectedCount} cloud-id` : "-"}</span></div>
@@ -211,7 +239,45 @@ async function loadStatus() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadAccounts(), loadStatus()]);
+  await Promise.all([loadAccounts(), loadStatus(), loadTelegramSettings()]);
+}
+
+async function loadTelegramSettings() {
+  const data = await api("/api/settings/telegram");
+  state.telegram = data.telegram || {};
+  $("telegramEnabled").checked = Boolean(state.telegram.enabled);
+  $("telegramChatId").value = state.telegram.chat_id || "";
+  $("telegramToken").value = "";
+  $("telegramToken").placeholder = state.telegram.has_bot_token ? "Токен сохранён" : "123456:ABCDEF";
+  $("clearTelegramToken").checked = false;
+  updateTelegramTestButton();
+}
+
+function updateTelegramTestButton() {
+  const hasToken = Boolean((state.telegram && state.telegram.has_bot_token) || $("telegramToken").value.trim());
+  $("testTelegramBtn").disabled = !$("telegramChatId").value.trim() || !hasToken;
+}
+
+async function saveTelegramSettings(event) {
+  event.preventDefault();
+  const payload = {
+    enabled: $("telegramEnabled").checked,
+    chat_id: $("telegramChatId").value,
+    bot_token: $("telegramToken").value,
+    clear_bot_token: $("clearTelegramToken").checked,
+  };
+  const data = await api("/api/settings/telegram", { method: "PUT", body: JSON.stringify(payload) });
+  state.telegram = data.telegram || {};
+  showToast("Telegram-настройки сохранены");
+  await loadTelegramSettings();
+}
+
+async function testTelegramSettings() {
+  if ($("telegramToken").value.trim() || $("clearTelegramToken").checked) {
+    await saveTelegramSettings(new Event("submit"));
+  }
+  await api("/api/settings/telegram/test", { method: "POST", body: "{}" });
+  showToast("Тестовое Telegram-сообщение отправлено");
 }
 
 async function activateAccount(id) {
@@ -355,8 +421,16 @@ function escapeHtml(value) {
 
 function attachEvents() {
   $("accountForm").addEventListener("submit", (event) => saveAccount(event).catch((error) => showToast(error.message)));
+  $("telegramForm").addEventListener("submit", (event) => saveTelegramSettings(event).catch((error) => showToast(error.message)));
   $("newAccountBtn").addEventListener("click", resetForm);
   $("cancelEditBtn").addEventListener("click", resetForm);
+  document.querySelectorAll("input[name='rollMode']").forEach((item) => {
+    item.addEventListener("change", () => setRollMode(selectedRollMode()));
+  });
+  $("telegramChatId").addEventListener("input", updateTelegramTestButton);
+  $("telegramToken").addEventListener("input", updateTelegramTestButton);
+  $("clearTelegramToken").addEventListener("change", updateTelegramTestButton);
+  $("testTelegramBtn").addEventListener("click", () => testTelegramSettings().catch((error) => showToast(error.message)));
   $("refreshBtn").addEventListener("click", () => refreshAll().catch((error) => showToast(error.message)));
   $("spinBtn").addEventListener("click", () => spin().catch((error) => showToast(error.message)));
   $("stopBtn").addEventListener("click", () => stopRun().catch((error) => showToast(error.message)));

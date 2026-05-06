@@ -19,12 +19,10 @@ import os
 import random
 import re
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -35,7 +33,6 @@ RESOURCE_MANAGER_URL = "https://resource-manager.api.cloud.yandex.net/resource-m
 BILLING_URL = "https://billing.api.cloud.yandex.net/billing/v1"
 VPC_URL = "https://vpc.api.cloud.yandex.net/vpc/v1"
 IMMEDIATE_DELETE_AFTER = "1970-01-01T00:00:00Z"
-SUCCESS_VIDEO_URL = "https://www.youtube.com/watch?v=tiCIjTNARX8&list=PLCZl9PrJVBkSJGJi3zpDkbxy8X-BeUQvK"
 
 DEFAULT_TARGET_CIDRS = [
     "84.201.0.0/16",
@@ -195,79 +192,6 @@ def config_bool(value: Any, default: bool = False) -> bool:
 
 def is_placeholder_value(value: Any) -> bool:
     return isinstance(value, str) and value.strip().upper().startswith("REPLACE_WITH_")
-
-
-def youtube_video_parts(url: str) -> Tuple[str, str]:
-    parsed = urllib.parse.urlparse(url)
-    query = urllib.parse.parse_qs(parsed.query)
-    video_id = str((query.get("v") or [""])[0])
-    playlist_id = str((query.get("list") or [""])[0])
-    if not video_id and parsed.netloc.lower().endswith("youtu.be"):
-        video_id = parsed.path.strip("/").split("/")[0]
-    return video_id, playlist_id
-
-
-def build_success_video_launcher(url: str) -> str:
-    video_id, playlist_id = youtube_video_parts(url)
-    if not video_id:
-        return url
-
-    html = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>ip hunter</title>
-  <style>
-    html, body, #player {{
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      background: #000;
-      overflow: hidden;
-    }}
-  </style>
-</head>
-<body>
-  <div id="player"></div>
-  <script src="https://www.youtube.com/iframe_api"></script>
-  <script>
-    const videoId = {json.dumps(video_id)};
-    const listId = {json.dumps(playlist_id)};
-    let player;
-
-    function onYouTubeIframeAPIReady() {{
-      const playerVars = {{
-        autoplay: 1,
-        controls: 1,
-        rel: 0,
-        playsinline: 1,
-        origin: window.location.origin
-      }};
-      if (listId) {{
-        playerVars.listType = "playlist";
-        playerVars.list = listId;
-      }}
-      player = new YT.Player("player", {{
-        width: "100%",
-        height: "100%",
-        videoId,
-        playerVars,
-        events: {{
-          onReady: function(event) {{
-            event.target.unMute();
-            event.target.setVolume(100);
-            event.target.playVideo();
-          }}
-        }}
-      }});
-    }}
-  </script>
-</body>
-</html>
-"""
-    path = Path(tempfile.gettempdir()) / "yc-ip-hunter-success.html"
-    path.write_text(html, encoding="utf-8")
-    return path.as_uri()
 
 
 def build_jwt_from_service_account_key(key_path: Path) -> str:
@@ -948,8 +872,7 @@ class IpHunter:
                 result = None
 
             if result:
-                self.state["success"] = dataclasses.asdict(result)
-                self.persist_state()
+                self.save_success(result)
                 if result.dry_run:
                     LOGGER.info(
                         "[dry-run] Would reserve IP %s in zone %s.",
@@ -963,6 +886,15 @@ class IpHunter:
                         result.zone,
                         result.address_id,
                     )
+                if self.should_continue_after_success():
+                    LOGGER.warning(
+                        "Success found in cloud %s; cloud protected and continuing with a new cloud.",
+                        result.cloud_id,
+                    )
+                    if not self.wait_for_cloud_slot():
+                        return 2
+                    cloud_id, folder_id = self.create_cloud_folder_pair()
+                    continue
                 return 0
 
             done = int(self.state.get("cloud_recreations_done", 0))
@@ -1018,6 +950,14 @@ class IpHunter:
                     result.folder_id,
                     result.address_id,
                 )
+                if self.should_continue_after_success():
+                    LOGGER.warning(
+                        "Success found in cloud %s; cloud protected and continuing.",
+                        result.cloud_id,
+                    )
+                    self.sleep_backoff(float(self.config.get("iteration_sleep_seconds", 10)))
+                    backoff = base_backoff
+                    continue
                 return 0
 
             self.submit_folder_delete(folder_id)
@@ -1053,6 +993,14 @@ class IpHunter:
                         result.folder_id,
                         result.address_id,
                     )
+                    if self.should_continue_after_success():
+                        LOGGER.warning(
+                            "Success found in cloud %s; cloud protected and continuing with a new cloud.",
+                            result.cloud_id,
+                        )
+                        self.sleep_backoff(float(self.config.get("cloud_iteration_sleep_seconds", 45)))
+                        backoff = base_backoff
+                        continue
                     return 0
 
                 self.submit_cloud_delete(cloud_id)
@@ -1116,6 +1064,29 @@ class IpHunter:
                         result.folder_id,
                         result.address_id,
                     )
+                    if self.should_continue_after_success():
+                        if self.is_project_roll_mode():
+                            self.state["status"] = "blocked_by_project_isolation"
+                            self.state["blocked_reason"] = (
+                                "Target IP was found in the selected project; cloud is now protected."
+                            )
+                            self.persist_state()
+                            LOGGER.error(
+                                "Project roll mode found target IP in cloud %s; cloud is protected and "
+                                "the selected project cannot be rotated further safely.",
+                                result.cloud_id,
+                            )
+                            return 0
+                        LOGGER.warning(
+                            "Success found in cloud %s; cloud protected and continuing with a new cloud.",
+                            result.cloud_id,
+                        )
+                        done = int(self.state.get("cloud_recreations_done", 0)) + 1
+                        self.state["cloud_recreations_done"] = done
+                        self.persist_state()
+                        self.sleep_backoff(float(self.config.get("cloud_iteration_sleep_seconds", 45)))
+                        backoff = base_backoff
+                        continue
                     return 0
 
                 LOGGER.warning(
@@ -1257,7 +1228,7 @@ class IpHunter:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
         if service_cloud_id and cloud_id == service_cloud_id:
             return False
-        if cloud_id in self.protected_cloud_ids():
+        if cloud_id in self.effective_protected_cloud_ids():
             return False
         return True
 
@@ -1266,6 +1237,33 @@ class IpHunter:
         if not isinstance(values, list):
             return set()
         return {str(value).strip() for value in values if str(value).strip()}
+
+    def auto_protected_cloud_ids(self) -> set[str]:
+        values = self.state.get("auto_protected_cloud_ids") or []
+        if not isinstance(values, list):
+            return set()
+        return {str(value).strip() for value in values if str(value).strip()}
+
+    def effective_protected_cloud_ids(self) -> set[str]:
+        return self.protected_cloud_ids() | self.auto_protected_cloud_ids()
+
+    def should_continue_after_success(self) -> bool:
+        return config_bool(self.config.get("continue_after_success"), default=False)
+
+    def is_project_roll_mode(self) -> bool:
+        return str(self.config.get("roll_mode") or "").strip().lower() == "project"
+
+    def protect_success_cloud(self, result: AttemptResult) -> None:
+        cloud_id = str(result.cloud_id or "").strip()
+        if not cloud_id:
+            return
+        values = self.state.setdefault("auto_protected_cloud_ids", [])
+        if not isinstance(values, list):
+            values = []
+            self.state["auto_protected_cloud_ids"] = values
+        existing = {str(value).strip() for value in values if str(value).strip()}
+        if cloud_id not in existing:
+            values.append(cloud_id)
 
     def run_address_rotation_in_cloud(
         self, cloud_id: str, folder_id: str, cloud_iteration: int
@@ -1624,27 +1622,10 @@ class IpHunter:
 
     def save_success(self, result: AttemptResult) -> None:
         self.state["success"] = dataclasses.asdict(result)
+        if self.should_continue_after_success():
+            self.protect_success_cloud(result)
         self.persist_state()
         self.notify_success(result)
-        self.open_success_video()
-
-    def open_success_video(self) -> bool:
-        if not config_bool(self.config.get("open_success_video"), default=True):
-            return False
-        url = str(self.config.get("success_video_url") or SUCCESS_VIDEO_URL).strip()
-        if not url:
-            return False
-        try:
-            launch_url = build_success_video_launcher(url)
-            opened = bool(webbrowser.open(launch_url, new=2, autoraise=True))
-        except Exception as exc:
-            LOGGER.debug("Success video failed to open: %s", exc)
-            return False
-        if opened:
-            LOGGER.info("Opened success video.")
-        else:
-            LOGGER.debug("Success video was not opened by the local browser.")
-        return opened
 
     def notify_success(self, result: AttemptResult) -> None:
         notifications = self.config.get("notifications") or {}
@@ -1770,6 +1751,9 @@ class IpHunter:
         self.persist_state()
 
     def cleanup_cloud_addresses(self, cloud_id: str) -> None:
+        if cloud_id in self.effective_protected_cloud_ids():
+            LOGGER.warning("Skipping address cleanup for protected cloud %s.", cloud_id)
+            return
         addresses_by_cloud = self.state.get("addresses_by_cloud") or {}
         cloud_addresses = list(addresses_by_cloud.get(cloud_id) or [])
         if not cloud_addresses:
@@ -1827,7 +1811,7 @@ class IpHunter:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
         if service_cloud_id and cloud_id == service_cloud_id:
             raise ConfigError(f"Refusing to delete service cloud {cloud_id}.")
-        if cloud_id in self.protected_cloud_ids():
+        if cloud_id in self.effective_protected_cloud_ids():
             raise ConfigError(f"Refusing to delete protected cloud {cloud_id}.")
         if not self.yes_delete_cloud and not self.dry_run:
             raise ConfigError("Refusing to delete cloud without --yes-delete-cloud.")
@@ -1874,7 +1858,7 @@ class IpHunter:
             ]
             if cloud_id
         }
-        excluded_cloud_ids.update(self.protected_cloud_ids())
+        excluded_cloud_ids.update(self.effective_protected_cloud_ids())
         name_prefix = sanitize_resource_name(
             str(self.config.get("cloud_name_prefix") or "ip-hunter")
         )
