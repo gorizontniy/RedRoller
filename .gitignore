@@ -1,6 +1,9 @@
 config.json
 config.*.json
 !config.example.json
+!bin/config.example.json
+IP_ROTATOR.V1.exe
+Redroller.exe
 telegram_bot_config.json
 .telegram_bot.offset
 sa-key.json
@@ -9,6 +12,8 @@ sa-key.json
 *.key
 .env
 .env.*
+*.sqlite
+*.sqlite3
 state.json
 state.json.tmp
 run.log
@@ -20,3 +25,8 @@ tmp*/
 __pycache__/
 *.pyc
 .pytest_cache/
+.web-runtime/
+.pyinstaller-build/
+build/
+dist/
+*.spec

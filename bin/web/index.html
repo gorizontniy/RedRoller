@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="ru" class="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redroller</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">REDROLLER</div>
+    <div class="top-actions">
+      <button id="refreshBtn" class="icon-btn" title="Обновить статус">СТАТУС</button>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel account-panel">
+      <nav class="tabbar" aria-label="Разделы панели">
+        <button class="tab-btn active" data-tab="accounts">Аккаунты</button>
+        <button class="tab-btn" data-tab="docs">Документация</button>
+        <button class="tab-btn" data-tab="isolation">Изоляция облака</button>
+        <button class="tab-btn" data-tab="telegram">Telegram</button>
+      </nav>
+
+      <section id="tab-accounts" class="tab-panel active">
+        <div class="section-head">
+          <h2>Аккаунты</h2>
+          <button id="newAccountBtn" class="square-btn" title="Новый аккаунт">+</button>
+        </div>
+
+        <div id="accountList" class="account-list"></div>
+
+        <form id="accountForm" class="credential-form">
+          <h3><span>+</span> Доступ Yandex Cloud</h3>
+          <input type="hidden" id="accountId">
+
+          <section class="mode-gate" aria-label="Выбор режима крутки">
+            <div class="mode-gate-head">
+              <span>1. Выберите режим</span>
+              <strong id="modeSummary">режим не выбран</strong>
+            </div>
+            <div class="mode-cards">
+              <label class="mode-card">
+                <input type="radio" name="rollMode" value="cloud">
+                <span class="mode-title">Крутка облаков</span>
+                <span class="mode-copy">Redroller создаёт disposable cloud, ловит адреса и уходит в следующее облако при лимитах.</span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="rollMode" value="project">
+                <span class="mode-title">Крутка 1 проекта</span>
+                <span class="mode-copy">Работа только внутри выбранного cloud/folder. Нужны ID целевого облака и Folder ID.</span>
+              </label>
+            </div>
+          </section>
+
+          <section id="modeConfig" class="mode-config hidden">
+            <label>
+              <span>Название аккаунта</span>
+              <input id="name" required placeholder="YC-SA-402">
+            </label>
+            <label>
+              <span>ID организации</span>
+              <input id="organizationId" required placeholder="bpf...">
+            </label>
+            <label>
+              <span>ID платёжного аккаунта</span>
+              <input id="billingAccountId" required placeholder="dn2...">
+            </label>
+            <label>
+              <span>ID сервисного облака</span>
+              <input id="serviceCloudId" required placeholder="b1g...">
+            </label>
+
+            <div id="cloudModeNote" class="mode-note">
+              <b>Режим облаков:</b> поля целевого cloud/folder не используются. Для hybrid-flow они будут очищены автоматически.
+            </div>
+
+            <div class="project-mode-field hidden">
+              <label>
+                <span>ID целевого облака</span>
+                <input id="targetCloudId" placeholder="b1g...">
+              </label>
+              <label>
+                <span>Folder ID проекта</span>
+                <input id="folderId" placeholder="f1x...">
+              </label>
+            </div>
+
+            <fieldset class="zone-picker">
+              <legend>Зоны ролла</legend>
+              <label><input type="checkbox" name="zones" value="ru-central1-a" checked> central1-a</label>
+              <label><input type="checkbox" name="zones" value="ru-central1-b"> central1-b</label>
+              <label><input type="checkbox" name="zones" value="ru-central1-c"> central1-c</label>
+              <label><input type="checkbox" name="zones" value="ru-central1-d"> central1-d</label>
+              <label><input type="checkbox" name="zones" value="ru-central1-e" checked> central1-e</label>
+            </fieldset>
+
+            <label>
+              <span>Целевые CIDR</span>
+              <textarea id="targetCidrs" rows="3" placeholder="84.201.188.0/23&#10;158.160.0.0/16"></textarea>
+            </label>
+            <label>
+              <span>Целевые IP</span>
+              <textarea id="targetIps" rows="2" placeholder="203.0.113.10"></textarea>
+            </label>
+            <label>
+              <span>JSON-ключ сервисного аккаунта</span>
+              <textarea id="serviceAccountJson" rows="5" placeholder="{&quot;id&quot;:&quot;...&quot;,&quot;service_account_id&quot;:&quot;...&quot;,&quot;private_key&quot;:&quot;...&quot;}"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary-btn">Сохранить аккаунт</button>
+              <button type="button" id="cancelEditBtn" class="secondary-btn">Отмена</button>
+            </div>
+          </section>
+        </form>
+      </section>
+
+      <section id="tab-docs" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Документация</h2>
+          <div class="doc-block">
+            <h3>1. Организация</h3>
+            <p>Откройте Yandex Cloud Console, нажмите название организации в левом верхнем углу и скопируйте идентификатор в поле <code>ID организации</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>2. Платёжный аккаунт</h3>
+            <p>Откройте раздел биллинга, выберите нужный платёжный аккаунт и вставьте его ID в поле <code>ID платёжного аккаунта</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>3. Сервисное облако</h3>
+            <p>Это облако, где живёт сервисный аккаунт. Скопируйте ID облака в поле <code>ID сервисного облака</code>. Это облако скрипт удалять не должен.</p>
+          </div>
+          <div class="doc-block">
+            <h3>4. Режим крутки</h3>
+            <p>Сначала выберите режим в форме аккаунта. <code>Крутка облаков</code> скрывает проектные поля и создаёт disposable cloud. <code>Крутка 1 проекта</code> раскрывает поля <code>ID целевого облака</code> и <code>Folder ID проекта</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>5. JSON-ключ</h3>
+            <p>В сервисном аккаунте создайте авторизованный JSON-ключ и вставьте весь файл целиком в поле <code>JSON-ключ сервисного аккаунта</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>6. Цели и зоны</h3>
+            <p>В <code>Целевые CIDR</code> или <code>Целевые IP</code> вставьте нужные диапазоны. В блоке <code>Зоны ролла</code> отметьте зоны, где нужно крутить адреса.</p>
+          </div>
+          <div class="doc-block">
+            <h3>7. Изоляция</h3>
+            <p>Во вкладке <code>Изоляция облака</code> выберите аккаунт и отдельной кнопкой сохраните cloud-id, которые нельзя удалять или переиспользовать. Общая кнопка сохранения аккаунта этот список не трогает.</p>
+          </div>
+          <div class="doc-block">
+            <h3>8. Профиль задержек</h3>
+            <p>По умолчанию используется <code>moderate_fast</code>: панель ускоряет обычные паузы ролла, но сохраняет ожидания IAM propagation и отдельную quota safety delay.</p>
+          </div>
+        </article>
+      </section>
+
+      <section id="tab-isolation" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Изоляция облака</h2>
+          <p class="muted">Изоляция сохраняется отдельно от формы аккаунта. Выберите аккаунт, укажите cloud-id и нажмите отдельную кнопку сохранения.</p>
+          <label class="isolation-editor">
+            <span>Аккаунт для изоляции</span>
+            <select id="isolationAccountSelect"></select>
+          </label>
+          <label class="isolation-editor">
+            <span>Защищённые cloud-id</span>
+            <textarea id="protectedCloudIds" rows="8" placeholder="b1g...&#10;b1h..."></textarea>
+          </label>
+          <div class="form-actions">
+            <button type="button" id="saveIsolationBtn" class="primary-btn">Сохранить изоляцию</button>
+          </div>
+          <p class="muted">Разрешены только латинские буквы нижнего регистра, цифры и дефис. Если хотя бы один ID некорректный, список не сохранится.</p>
+        </article>
+      </section>
+
+      <section id="tab-telegram" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Telegram</h2>
+          <p class="muted">Уведомления общие для всей панели. При успешном выпадении IP скрипт отправит сообщение в этот чат.</p>
+          <form id="telegramForm" class="credential-form embedded-form">
+            <label class="checkbox-row">
+              <input type="checkbox" id="telegramEnabled">
+              <span>Включить Telegram-уведомления</span>
+            </label>
+            <label>
+              <span>Chat ID</span>
+              <input id="telegramChatId" placeholder="123456789">
+            </label>
+            <label>
+              <span>Bot token</span>
+              <input id="telegramToken" type="password" placeholder="123456:ABCDEF">
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="clearTelegramToken">
+              <span>Удалить сохранённый token</span>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary-btn">Сохранить Telegram</button>
+              <button type="button" id="testTelegramBtn" class="secondary-btn">Отправить тест</button>
+            </div>
+          </form>
+          <p class="muted">Создайте бота через BotFather, вставьте token, затем узнайте chat_id через getUpdates или специального helper-бота. Если token уже сохранён, поле можно оставить пустым.</p>
+        </article>
+      </section>
+    </section>
+
+    <section class="panel roulette-panel">
+      <div class="status-card">
+        <h2>IP-рулетка</h2>
+        <div class="status-metrics">
+          <div>
+            <span class="metric-label">Текущий IP</span>
+            <strong id="currentIp">-</strong>
+          </div>
+          <div class="metric-split">
+            <span class="metric-label">Целевая подсеть !</span>
+            <strong id="targetSubnet">-</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="reel-frame">
+        <div class="reticle"></div>
+        <div id="reel" class="reel"></div>
+      </div>
+      <div id="reelError" class="reel-error hidden"></div>
+
+      <button id="spinBtn" class="spin-btn">
+        <span class="spin-icon">ПУСК</span>
+        <span>КРУТИТЬ БСы</span>
+        <small>Ударный ролл — залог победы</small>
+      </button>
+
+      <div class="ops-row">
+        <button id="stopBtn" class="secondary-btn danger">Остановить</button>
+        <button id="recreateBtn" class="secondary-btn">Пересоздать сейчас</button>
+      </div>
+
+      <section class="history-card history-main">
+        <div class="history-head">
+          <h3>История IP</h3>
+          <button id="logToggleBtn" class="secondary-btn">Подробный лог</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Время</th>
+                <th>IP</th>
+                <th>Зона</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="attemptRows"></tbody>
+          </table>
+        </div>
+        <div id="logPanel" class="log-panel hidden">
+          <div class="history-head">
+            <h3>Подробный лог процесса</h3>
+            <button id="logCloseBtn" class="secondary-btn">Скрыть</button>
+          </div>
+          <pre id="logTail"></pre>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
