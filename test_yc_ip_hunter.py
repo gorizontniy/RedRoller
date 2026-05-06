@@ -209,6 +209,20 @@ class IterationTests(unittest.TestCase):
         self.assertEqual(config["rotation_mode"], "hybrid")
         self.assertEqual(config["target_cloud_id"], "")
 
+    def test_config_example_uses_moderate_fast_delay_profile(self):
+        config = json.loads(MODULE_PATH.with_name("config.example.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(config["delay_profile"], "moderate_fast")
+        self.assertEqual(config["iam_propagation_sleep_seconds"], 8)
+        self.assertEqual(config["create_address_permission_retry_sleep_seconds"], 5)
+        self.assertEqual(config["address_iteration_sleep_seconds"], 1)
+        self.assertEqual(config["pre_cloud_delete_cleanup_sleep_seconds"], 1)
+        self.assertEqual(config["address_delete_retry_sleep_seconds"], 1)
+        self.assertEqual(config["cloud_iteration_sleep_seconds"], 20)
+        self.assertEqual(config["operation_poll_seconds"], 3)
+        self.assertEqual(config["attempt_delay_seconds"], 0.1)
+        self.assertEqual(config["cloud_quota_wait_seconds"], 120)
+
     def test_hybrid_scope_ignores_stale_state_folder(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.config = {
@@ -309,9 +323,10 @@ class IterationTests(unittest.TestCase):
 
     def test_hybrid_never_deletes_service_cloud(self):
         hunter = object.__new__(yc.IpHunter)
-        hunter.config = {"service_cloud_id": "service-cloud"}
+        hunter.config = {"service_cloud_id": "service-cloud", "protected_cloud_ids": ["protected-cloud"]}
 
         self.assertFalse(hunter.can_delete_hybrid_cloud("service-cloud"))
+        self.assertFalse(hunter.can_delete_hybrid_cloud("protected-cloud"))
         self.assertTrue(hunter.can_delete_hybrid_cloud("hunting-cloud"))
 
     def test_cloud_slot_count_ignores_fixed_and_unmanaged_clouds(self):
@@ -320,6 +335,7 @@ class IterationTests(unittest.TestCase):
                 return [
                     {"id": "service-cloud", "name": "service"},
                     {"id": "target-cloud", "name": "main"},
+                    {"id": "protected-cloud", "name": "protected"},
                     {"id": "random-user-cloud", "name": "personal"},
                     {
                         "id": "managed-by-label",
@@ -334,11 +350,21 @@ class IterationTests(unittest.TestCase):
             "organization_id": "org",
             "service_cloud_id": "service-cloud",
             "target_cloud_id": "target-cloud",
+            "protected_cloud_ids": ["protected-cloud"],
             "cloud_name_prefix": "ip-hunter",
         }
         hunter.client = FakeClient()
 
         self.assertEqual(hunter.count_non_service_clouds(), 2)
+
+    def test_protected_cloud_delete_is_rejected(self):
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {"protected_cloud_ids": ["protected-cloud"]}
+        hunter.yes_delete_cloud = True
+        hunter.dry_run = False
+
+        with self.assertRaisesRegex(yc.ConfigError, "protected cloud"):
+            hunter.ensure_managed_cloud_delete_allowed("protected-cloud")
 
     def test_cloud_delete_cleanup_settings_exist(self):
         text = MODULE_PATH.read_text(encoding="utf-8")

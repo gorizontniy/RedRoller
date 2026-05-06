@@ -9,6 +9,8 @@ sa-key.json
 *.key
 .env
 .env.*
+*.sqlite
+*.sqlite3
 state.json
 state.json.tmp
 run.log
@@ -20,3 +22,8 @@ tmp*/
 __pycache__/
 *.pyc
 .pytest_cache/
+.web-runtime/
+.pyinstaller-build/
+build/
+dist/
+*.spec

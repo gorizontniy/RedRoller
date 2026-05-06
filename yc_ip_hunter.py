@@ -912,6 +912,9 @@ class IpHunter:
             self.config["zones"] = zones
         if not isinstance(zones, list) or not zones:
             raise ConfigError("zones must be a non-empty list.")
+        protected_cloud_ids = self.config.get("protected_cloud_ids") or []
+        if not isinstance(protected_cloud_ids, list):
+            raise ConfigError("protected_cloud_ids must be a list.")
         if not self.config.get("target_ips") and not self.config.get("target_cidrs"):
             self.config["target_cidrs"] = DEFAULT_TARGET_CIDRS
         if int(self.config.get("max_ip_candidates_per_cloud", 1000)) <= 0:
@@ -1254,7 +1257,15 @@ class IpHunter:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
         if service_cloud_id and cloud_id == service_cloud_id:
             return False
+        if cloud_id in self.protected_cloud_ids():
+            return False
         return True
+
+    def protected_cloud_ids(self) -> set[str]:
+        values = self.config.get("protected_cloud_ids") or []
+        if not isinstance(values, list):
+            return set()
+        return {str(value).strip() for value in values if str(value).strip()}
 
     def run_address_rotation_in_cloud(
         self, cloud_id: str, folder_id: str, cloud_iteration: int
@@ -1816,6 +1827,8 @@ class IpHunter:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
         if service_cloud_id and cloud_id == service_cloud_id:
             raise ConfigError(f"Refusing to delete service cloud {cloud_id}.")
+        if cloud_id in self.protected_cloud_ids():
+            raise ConfigError(f"Refusing to delete protected cloud {cloud_id}.")
         if not self.yes_delete_cloud and not self.dry_run:
             raise ConfigError("Refusing to delete cloud without --yes-delete-cloud.")
 
@@ -1861,6 +1874,7 @@ class IpHunter:
             ]
             if cloud_id
         }
+        excluded_cloud_ids.update(self.protected_cloud_ids())
         name_prefix = sanitize_resource_name(
             str(self.config.get("cloud_name_prefix") or "ip-hunter")
         )

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ru" class="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IP_ROTATOR.V1</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">IP_ROTATOR.V1</div>
+    <div class="top-actions">
+      <button id="refreshBtn" class="icon-btn" title="Обновить статус">СТАТУС</button>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel account-panel">
+      <nav class="tabbar" aria-label="Разделы панели">
+        <button class="tab-btn active" data-tab="accounts">Аккаунты</button>
+        <button class="tab-btn" data-tab="docs">Документация</button>
+        <button class="tab-btn" data-tab="isolation">Изоляция облака</button>
+      </nav>
+
+      <section id="tab-accounts" class="tab-panel active">
+        <div class="section-head">
+          <h2>Аккаунты</h2>
+          <button id="newAccountBtn" class="square-btn" title="Новый аккаунт">+</button>
+        </div>
+
+        <div id="accountList" class="account-list"></div>
+
+        <form id="accountForm" class="credential-form">
+          <h3><span>+</span> Добавить доступ</h3>
+          <input type="hidden" id="accountId">
+          <label>
+            <span>Название аккаунта</span>
+            <input id="name" required placeholder="YC-SA-402">
+          </label>
+          <label>
+            <span>ID организации</span>
+            <input id="organizationId" required placeholder="bpf...">
+          </label>
+          <label>
+            <span>ID платёжного аккаунта</span>
+            <input id="billingAccountId" required placeholder="dn2...">
+          </label>
+          <label>
+            <span>ID сервисного облака</span>
+            <input id="serviceCloudId" required placeholder="b1g...">
+          </label>
+          <label>
+            <span>ID целевого облака только для folder-режима</span>
+            <input id="targetCloudId" placeholder="для hybrid оставьте пустым">
+          </label>
+          <label>
+            <span>Folder ID необязательно</span>
+            <input id="folderId" placeholder="f1x...">
+          </label>
+
+          <fieldset class="zone-picker">
+            <legend>Зоны ролла</legend>
+            <label><input type="checkbox" name="zones" value="ru-central1-a" checked> central1-a</label>
+            <label><input type="checkbox" name="zones" value="ru-central1-b"> central1-b</label>
+            <label><input type="checkbox" name="zones" value="ru-central1-c"> central1-c</label>
+            <label><input type="checkbox" name="zones" value="ru-central1-d"> central1-d</label>
+            <label><input type="checkbox" name="zones" value="ru-central1-e" checked> central1-e</label>
+          </fieldset>
+
+          <label>
+            <span>Целевые CIDR</span>
+            <textarea id="targetCidrs" rows="3" placeholder="84.201.188.0/23&#10;158.160.0.0/16"></textarea>
+          </label>
+          <label>
+            <span>Целевые IP</span>
+            <textarea id="targetIps" rows="2" placeholder="203.0.113.10"></textarea>
+          </label>
+          <label>
+            <span>JSON-ключ сервисного аккаунта</span>
+            <textarea id="serviceAccountJson" rows="5" placeholder="{&quot;id&quot;:&quot;...&quot;,&quot;service_account_id&quot;:&quot;...&quot;,&quot;private_key&quot;:&quot;...&quot;}"></textarea>
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn">Сохранить аккаунт</button>
+            <button type="button" id="cancelEditBtn" class="secondary-btn">Отмена</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="tab-docs" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Документация</h2>
+          <div class="doc-block">
+            <h3>1. Организация</h3>
+            <p>Откройте Yandex Cloud Console, нажмите название организации в левом верхнем углу и скопируйте идентификатор в поле <code>ID организации</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>2. Платёжный аккаунт</h3>
+            <p>Откройте раздел биллинга, выберите нужный платёжный аккаунт и вставьте его ID в поле <code>ID платёжного аккаунта</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>3. Сервисное облако</h3>
+            <p>Это облако, где живёт сервисный аккаунт. Скопируйте ID облака в поле <code>ID сервисного облака</code>. Это облако скрипт удалять не должен.</p>
+          </div>
+          <div class="doc-block">
+            <h3>4. JSON-ключ</h3>
+            <p>В сервисном аккаунте создайте авторизованный JSON-ключ и вставьте весь файл целиком в поле <code>JSON-ключ сервисного аккаунта</code>.</p>
+          </div>
+          <div class="doc-block">
+            <h3>5. Цели и зоны</h3>
+            <p>В <code>Целевые CIDR</code> или <code>Целевые IP</code> вставьте нужные диапазоны. В блоке <code>Зоны ролла</code> отметьте зоны, где нужно крутить адреса.</p>
+          </div>
+          <div class="doc-block">
+            <h3>6. Hybrid-режим</h3>
+            <p>Для обычного hybrid-flow оставьте <code>ID целевого облака</code> пустым. Тогда панель создаёт disposable cloud и не пытается работать в плейсхолдере.</p>
+          </div>
+          <div class="doc-block">
+            <h3>7. Изоляция</h3>
+            <p>Во вкладке <code>Изоляция облака</code> выберите аккаунт и отдельной кнопкой сохраните cloud-id, которые нельзя удалять или переиспользовать. Общая кнопка сохранения аккаунта этот список не трогает.</p>
+          </div>
+          <div class="doc-block">
+            <h3>8. Профиль задержек</h3>
+            <p>По умолчанию используется <code>moderate_fast</code>: панель ускоряет обычные паузы ролла, но сохраняет ожидания IAM propagation и отдельную quota safety delay.</p>
+          </div>
+        </article>
+      </section>
+
+      <section id="tab-isolation" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Изоляция облака</h2>
+          <p class="muted">Изоляция сохраняется отдельно от формы аккаунта. Выберите аккаунт, укажите cloud-id и нажмите отдельную кнопку сохранения.</p>
+          <label class="isolation-editor">
+            <span>Аккаунт для изоляции</span>
+            <select id="isolationAccountSelect"></select>
+          </label>
+          <label class="isolation-editor">
+            <span>Защищённые cloud-id</span>
+            <textarea id="protectedCloudIds" rows="8" placeholder="b1g...&#10;b1h..."></textarea>
+          </label>
+          <div class="form-actions">
+            <button type="button" id="saveIsolationBtn" class="primary-btn">Сохранить изоляцию</button>
+          </div>
+          <p class="muted">Разрешены только латинские буквы нижнего регистра, цифры и дефис. Если хотя бы один ID некорректный, список не сохранится.</p>
+        </article>
+      </section>
+    </section>
+
+    <section class="panel roulette-panel">
+      <div class="status-card">
+        <h2>IP-рулетка</h2>
+        <div class="status-metrics">
+          <div>
+            <span class="metric-label">Текущий IP</span>
+            <strong id="currentIp">-</strong>
+          </div>
+          <div class="metric-split">
+            <span class="metric-label">Целевая подсеть !</span>
+            <strong id="targetSubnet">-</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="reel-frame">
+        <div class="reticle"></div>
+        <div id="reel" class="reel"></div>
+      </div>
+      <div id="reelError" class="reel-error hidden"></div>
+
+      <button id="spinBtn" class="spin-btn">
+        <span class="spin-icon">ПУСК</span>
+        <span>КРУТИТЬ БСы</span>
+      </button>
+
+      <div class="ops-row">
+        <button id="stopBtn" class="secondary-btn danger">Остановить</button>
+        <button id="recreateBtn" class="secondary-btn">Пересоздать сейчас</button>
+      </div>
+
+      <section class="history-card history-main">
+        <div class="history-head">
+          <h3>История IP</h3>
+          <button id="logToggleBtn" class="secondary-btn">Подробный лог</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Время</th>
+                <th>IP</th>
+                <th>Зона</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="attemptRows"></tbody>
+          </table>
+        </div>
+        <div id="logPanel" class="log-panel hidden">
+          <div class="history-head">
+            <h3>Подробный лог процесса</h3>
+            <button id="logCloseBtn" class="secondary-btn">Скрыть</button>
+          </div>
+          <pre id="logTail"></pre>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
