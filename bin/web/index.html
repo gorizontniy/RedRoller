@@ -18,9 +18,10 @@
     <section class="panel account-panel">
       <nav class="tabbar" aria-label="Разделы панели">
         <button class="tab-btn active" data-tab="accounts">Аккаунты</button>
-        <button class="tab-btn" data-tab="docs">Документация</button>
-        <button class="tab-btn" data-tab="isolation">Изоляция облака</button>
+        <button class="tab-btn" data-tab="targets">Цели</button>
+        <button class="tab-btn" data-tab="isolation">Изоляция</button>
         <button class="tab-btn" data-tab="telegram">Telegram</button>
+        <button class="tab-btn" data-tab="docs">Документация</button>
       </nav>
 
       <section id="tab-accounts" class="tab-panel active">
@@ -43,8 +44,8 @@
             <div class="mode-cards">
               <label class="mode-card">
                 <input type="radio" name="rollMode" value="cloud">
-                <span class="mode-title">Крутка облаков</span>
-                <span class="mode-copy">Redroller создаёт disposable cloud, ловит адреса и уходит в следующее облако при лимитах.</span>
+                <span class="mode-title">Гибридная крутка</span>
+                <span class="mode-copy">Redroller сам создаёт disposable cloud/folder, крутит адреса и переходит в новое облако при лимитах.</span>
               </label>
               <label class="mode-card">
                 <input type="radio" name="rollMode" value="project">
@@ -73,7 +74,7 @@
             </label>
 
             <div id="cloudModeNote" class="mode-note">
-              <b>Режим облаков:</b> поля целевого cloud/folder не используются. Для hybrid-flow они будут очищены автоматически.
+              <b>Гибридный режим:</b> поля целевого cloud/folder не используются. Redroller сам создаёт рабочие disposable cloud/folder и не трогает ID из изоляции.
             </div>
 
             <div class="project-mode-field hidden">
@@ -82,7 +83,7 @@
                 <input id="targetCloudId" placeholder="b1g...">
               </label>
               <label>
-                <span>Folder ID проекта</span>
+                <span>ID каталога 1 проекта</span>
                 <input id="folderId" placeholder="f1x...">
               </label>
             </div>
@@ -94,6 +95,18 @@
               <label><input type="checkbox" name="zones" value="ru-central1-c"> central1-c</label>
               <label><input type="checkbox" name="zones" value="ru-central1-d"> central1-d</label>
               <label><input type="checkbox" name="zones" value="ru-central1-e" checked> central1-e</label>
+            </fieldset>
+
+            <fieldset class="success-mode">
+              <legend>После успеха</legend>
+              <label>
+                <input type="radio" name="successMode" value="stop" checked>
+                <span>Остановиться после первого найденного IP</span>
+              </label>
+              <label>
+                <input type="radio" name="successMode" value="continue">
+                <span>Продолжать и собирать несколько IP</span>
+              </label>
             </fieldset>
 
             <label>
@@ -108,12 +121,36 @@
               <span>JSON-ключ сервисного аккаунта</span>
               <textarea id="serviceAccountJson" rows="5" placeholder="{&quot;id&quot;:&quot;...&quot;,&quot;service_account_id&quot;:&quot;...&quot;,&quot;private_key&quot;:&quot;...&quot;}"></textarea>
             </label>
+            <p class="muted">В Yandex Cloud нажмите <code>Создать ключ</code> → <code>Создать авторизованный ключ</code> → <code>Скачать файл с ключами</code>. В это поле вставляется весь скачанный JSON целиком, а не отдельный открытый или закрытый ключ.</p>
             <div class="form-actions">
               <button type="submit" class="primary-btn">Сохранить аккаунт</button>
               <button type="button" id="cancelEditBtn" class="secondary-btn">Отмена</button>
             </div>
           </section>
         </form>
+      </section>
+
+      <section id="tab-targets" class="tab-panel">
+        <article class="doc-panel">
+          <h2>Цели</h2>
+          <p class="muted">Это белый список адресов. Ролл считается успешным, если выпавший публичный IPv4 попал в один из этих IP или CIDR.</p>
+          <label class="isolation-editor">
+            <span>Аккаунт для целей</span>
+            <select id="targetsAccountSelect"></select>
+          </label>
+          <label class="isolation-editor">
+            <span>Целевые CIDR</span>
+            <textarea id="targetEditorCidrs" rows="8" placeholder="84.201.188.0/23&#10;158.160.0.0/16"></textarea>
+          </label>
+          <label class="isolation-editor">
+            <span>Целевые IP</span>
+            <textarea id="targetEditorIps" rows="6" placeholder="203.0.113.10&#10;198.51.100.44"></textarea>
+          </label>
+          <div class="form-actions">
+            <button type="button" id="saveTargetsBtn" class="primary-btn">Сохранить цели</button>
+          </div>
+          <p class="muted">Можно добавлять по одному значению на строку или через запятую. Пустой список не сохраняется: нужен хотя бы один CIDR или IP.</p>
+        </article>
       </section>
 
       <section id="tab-docs" class="tab-panel">
@@ -133,22 +170,26 @@
           </div>
           <div class="doc-block">
             <h3>4. Режим крутки</h3>
-            <p>Сначала выберите режим в форме аккаунта. <code>Крутка облаков</code> скрывает проектные поля и создаёт disposable cloud. <code>Крутка 1 проекта</code> раскрывает поля <code>ID целевого облака</code> и <code>Folder ID проекта</code>.</p>
+            <p>Сначала выберите режим в форме аккаунта. <code>Гибридная крутка</code> скрывает проектные поля и создаёт disposable cloud/folder сама. <code>Крутка 1 проекта</code> раскрывает поля <code>ID целевого облака</code> и <code>ID каталога 1 проекта</code>.</p>
           </div>
           <div class="doc-block">
             <h3>5. JSON-ключ</h3>
-            <p>В сервисном аккаунте создайте авторизованный JSON-ключ и вставьте весь файл целиком в поле <code>JSON-ключ сервисного аккаунта</code>.</p>
+            <p>Откройте сервисный аккаунт, нажмите <code>Создать ключ</code> → <code>Создать авторизованный ключ</code>, затем нажмите <code>Скачать файл с ключами</code>. В Redroller вставляется весь скачанный JSON-файл целиком. Не копируйте отдельно блок <code>Ваш открытый ключ</code> или блок <code>Ваш закрытый ключ</code>: по отдельности они не являются нужным JSON-ключом.</p>
           </div>
           <div class="doc-block">
             <h3>6. Цели и зоны</h3>
-            <p>В <code>Целевые CIDR</code> или <code>Целевые IP</code> вставьте нужные диапазоны. В блоке <code>Зоны ролла</code> отметьте зоны, где нужно крутить адреса.</p>
+            <p>В форме аккаунта или во вкладке <code>Цели</code> настройте белый список: <code>Целевые CIDR</code> и <code>Целевые IP</code>. В блоке <code>Зоны ролла</code> отметьте зоны, где нужно крутить адреса.</p>
           </div>
           <div class="doc-block">
-            <h3>7. Изоляция</h3>
-            <p>Во вкладке <code>Изоляция облака</code> выберите аккаунт и отдельной кнопкой сохраните cloud-id, которые нельзя удалять или переиспользовать. Общая кнопка сохранения аккаунта этот список не трогает.</p>
+            <h3>7. Поведение после успеха</h3>
+            <p><code>Остановиться после первого найденного IP</code> — безопасный режим для первого запуска. <code>Продолжать и собирать несколько IP</code> оставляет успешный адрес, добавляет его cloud/folder в изоляцию и запускает следующий disposable cloud/folder.</p>
           </div>
           <div class="doc-block">
-            <h3>8. Профиль задержек</h3>
+            <h3>8. Изоляция</h3>
+            <p>Во вкладке <code>Изоляция</code> выберите аккаунт и отдельной кнопкой сохраните cloud-id и folder-id, которые нельзя удалять или использовать в ролле. Общая кнопка сохранения аккаунта эти списки не трогает.</p>
+          </div>
+          <div class="doc-block">
+            <h3>9. Профиль задержек</h3>
             <p>По умолчанию используется <code>moderate_fast</code>: панель ускоряет обычные паузы ролла, но сохраняет ожидания IAM propagation и отдельную quota safety delay.</p>
           </div>
         </article>
@@ -156,8 +197,8 @@
 
       <section id="tab-isolation" class="tab-panel">
         <article class="doc-panel">
-          <h2>Изоляция облака</h2>
-          <p class="muted">Изоляция сохраняется отдельно от формы аккаунта. Выберите аккаунт, укажите cloud-id и нажмите отдельную кнопку сохранения.</p>
+          <h2>Изоляция</h2>
+          <p class="muted">Изоляция сохраняется отдельно от формы аккаунта. Выберите аккаунт, укажите cloud-id и folder-id рабочих ресурсов и нажмите отдельную кнопку сохранения.</p>
           <label class="isolation-editor">
             <span>Аккаунт для изоляции</span>
             <select id="isolationAccountSelect"></select>
@@ -165,6 +206,10 @@
           <label class="isolation-editor">
             <span>Защищённые cloud-id</span>
             <textarea id="protectedCloudIds" rows="8" placeholder="b1g...&#10;b1h..."></textarea>
+          </label>
+          <label class="isolation-editor">
+            <span>Защищённые folder-id</span>
+            <textarea id="protectedFolderIds" rows="6" placeholder="b1g-folder...&#10;aoe-folder..."></textarea>
           </label>
           <div class="form-actions">
             <button type="button" id="saveIsolationBtn" class="primary-btn">Сохранить изоляцию</button>
@@ -213,7 +258,7 @@
             <strong id="currentIp">-</strong>
           </div>
           <div class="metric-split">
-            <span class="metric-label">Целевая подсеть !</span>
+            <span class="metric-label">Цели !</span>
             <strong id="targetSubnet">-</strong>
           </div>
         </div>
@@ -250,6 +295,8 @@
                 <th>IP</th>
                 <th>Зона</th>
                 <th>Статус</th>
+                <th>YC</th>
+                <th>Действие</th>
               </tr>
             </thead>
             <tbody id="attemptRows"></tbody>

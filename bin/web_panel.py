@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import importlib.util
+import ipaddress
 import json
 import mimetypes
 import os
@@ -35,10 +37,11 @@ DEFAULT_DB_NAME = "ip_rotator.sqlite3"
 DEFAULT_WEB_DIR = ROOT / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
 DEFAULT_ZONES = ["ru-central1-a", "ru-central1-b", "ru-central1-c", "ru-central1-d", "ru-central1-e"]
 YC_LIKE_ID_RE = re.compile(r"^[a-z0-9-]{6,64}$")
 ROLL_MODES = {"cloud", "project"}
+_YC_IP_HUNTER_MODULE: Optional[Any] = None
 
 
 class WebPanelError(RuntimeError):
@@ -47,6 +50,21 @@ class WebPanelError(RuntimeError):
 
 class WebPanelNotFound(WebPanelError):
     pass
+
+
+def load_yc_ip_hunter_module() -> Any:
+    global _YC_IP_HUNTER_MODULE
+    if _YC_IP_HUNTER_MODULE is not None:
+        return _YC_IP_HUNTER_MODULE
+    module_path = ROOT / "yc_ip_hunter.py"
+    spec = importlib.util.spec_from_file_location("yc_ip_hunter_module", module_path)
+    if spec is None or spec.loader is None:
+        raise WebPanelError("Не удалось загрузить Yandex Cloud cleanup-модуль.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(spec.name, module)
+    spec.loader.exec_module(module)
+    _YC_IP_HUNTER_MODULE = module
+    return module
 
 
 def utc_now() -> str:
@@ -95,18 +113,96 @@ def unique_text_list(values: List[str]) -> List[str]:
     return result
 
 
-def normalize_protected_cloud_ids(value: Any) -> List[str]:
+def normalize_yc_like_ids(value: Any, field_name: str, label: str) -> List[str]:
     if not isinstance(value, list):
-        raise WebPanelError("protected_cloud_ids должен быть списком.")
+        raise WebPanelError(f"{field_name} должен быть списком.")
     result = unique_text_list([str(item).strip() for item in value])
     invalid = [item for item in result if not YC_LIKE_ID_RE.fullmatch(item)]
     if invalid:
         raise WebPanelError(
-            "Некорректный cloud-id в изоляции: "
+            f"Некорректный {label} в изоляции: "
             + ", ".join(invalid)
             + ". Разрешены только a-z, 0-9 и дефис, длина 6-64 символа."
         )
     return result
+
+
+def normalize_protected_cloud_ids(value: Any) -> List[str]:
+    return normalize_yc_like_ids(value, "protected_cloud_ids", "cloud-id")
+
+
+def normalize_protected_folder_ids(value: Any) -> List[str]:
+    return normalize_yc_like_ids(value, "protected_folder_ids", "folder-id")
+
+
+def normalize_target_cidrs(value: Any) -> List[str]:
+    result = []
+    seen = set()
+    invalid = []
+    for item in unique_text_list(parse_json_list(value)):
+        try:
+            network = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            invalid.append(item)
+            continue
+        if network.version != 4:
+            invalid.append(item)
+            continue
+        normalized = str(network)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    if invalid:
+        raise WebPanelError("Некорректный целевой CIDR: " + ", ".join(invalid))
+    return result
+
+
+def normalize_target_ips(value: Any) -> List[str]:
+    result = []
+    seen = set()
+    invalid = []
+    for item in unique_text_list(parse_json_list(value)):
+        try:
+            address = ipaddress.ip_address(item)
+        except ValueError:
+            invalid.append(item)
+            continue
+        if address.version != 4:
+            invalid.append(item)
+            continue
+        normalized = str(address)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    if invalid:
+        raise WebPanelError("Некорректный целевой IP: " + ", ".join(invalid))
+    return result
+
+
+def target_payload(payload: Dict[str, Any]) -> Dict[str, str]:
+    target_cidrs = normalize_target_cidrs(payload.get("target_cidrs") or payload.get("targetCidrs"))
+    target_ips = normalize_target_ips(payload.get("target_ips") or payload.get("targetIps"))
+    if not target_cidrs and not target_ips:
+        raise WebPanelError("Укажите хотя бы один целевой CIDR или IP.")
+    return {
+        "target_cidrs_json": json.dumps(target_cidrs),
+        "target_ips_json": json.dumps(target_ips),
+    }
+
+
+def target_address_count(target_cidrs: List[str], target_ips: List[str]) -> int:
+    ranges = []
+    for cidr in target_cidrs:
+        ranges.append(ipaddress.ip_network(str(cidr), strict=False))
+    for ip in target_ips:
+        ranges.append(ipaddress.ip_network(f"{ip}/32", strict=False))
+    return sum(network.num_addresses for network in ipaddress.collapse_addresses(ranges))
+
+
+def format_target_address_count(count: int) -> str:
+    if count <= 0:
+        return "-"
+    return f"{count:,}".replace(",", " ") + " IP"
 
 
 def read_json(path: Path) -> Dict[str, Any]:
@@ -224,6 +320,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             target_ips_json TEXT NOT NULL DEFAULT '[]',
             zones_json TEXT NOT NULL DEFAULT '[]',
             protected_cloud_ids_json TEXT NOT NULL DEFAULT '[]',
+            protected_folder_ids_json TEXT NOT NULL DEFAULT '[]',
+            continue_after_success INTEGER NOT NULL DEFAULT 0,
             roll_mode TEXT NOT NULL DEFAULT 'cloud',
             service_account_json_encrypted BLOB NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 0,
@@ -260,13 +358,27 @@ def init_db(conn: sqlite3.Connection) -> None:
             cloud_id TEXT NOT NULL,
             folder_id TEXT NOT NULL,
             address_id TEXT NOT NULL,
-            matched INTEGER NOT NULL DEFAULT 0
+            matched INTEGER NOT NULL DEFAULT 0,
+            cleanup_status TEXT NOT NULL DEFAULT '',
+            cleanup_at TEXT NOT NULL DEFAULT '',
+            cleanup_error TEXT NOT NULL DEFAULT '',
+            cloud_cleanup_status TEXT NOT NULL DEFAULT '',
+            cloud_cleanup_at TEXT NOT NULL DEFAULT '',
+            cloud_cleanup_error TEXT NOT NULL DEFAULT ''
         );
         """
     )
     ensure_column(conn, "accounts", "zones_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, "accounts", "protected_cloud_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "accounts", "protected_folder_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "accounts", "continue_after_success", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "accounts", "roll_mode", "TEXT NOT NULL DEFAULT 'cloud'")
+    ensure_column(conn, "attempts", "cleanup_status", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "attempts", "cleanup_at", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "attempts", "cleanup_error", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "attempts", "cloud_cleanup_status", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "attempts", "cloud_cleanup_at", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "attempts", "cloud_cleanup_error", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "INSERT OR REPLACE INTO settings(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -306,8 +418,15 @@ class WebPanelApp:
         if not self.db_path.exists():
             return
         with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(accounts)")}
-        if "roll_mode" not in columns:
+            account_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(accounts)")}
+            attempt_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(attempts)")}
+        if (
+            "roll_mode" not in account_columns
+            or "protected_folder_ids_json" not in account_columns
+            or "continue_after_success" not in account_columns
+            or "cleanup_status" not in attempt_columns
+            or "cloud_cleanup_status" not in attempt_columns
+        ):
             backup_sqlite_before_schema_change(self.db_path)
 
     @contextlib.contextmanager
@@ -462,6 +581,11 @@ class WebPanelApp:
         zones = unique_text_list(parse_json_list(zones_source))
         if not zones:
             raise WebPanelError("Выберите хотя бы одну зону.")
+        targets = target_payload(payload)
+        continue_after_success = config_bool(
+            payload.get("continue_after_success", payload.get("continueAfterSuccess")),
+            default=False,
+        )
         return {
             "name": name,
             "organization_id": org_id,
@@ -470,9 +594,10 @@ class WebPanelApp:
             "roll_mode": roll_mode,
             "target_cloud_id": target_cloud_id,
             "folder_id": folder_id,
-            "target_cidrs_json": json.dumps(parse_json_list(payload.get("target_cidrs") or payload.get("targetCidrs"))),
-            "target_ips_json": json.dumps(parse_json_list(payload.get("target_ips") or payload.get("targetIps"))),
+            "target_cidrs_json": targets["target_cidrs_json"],
+            "target_ips_json": targets["target_ips_json"],
             "zones_json": json.dumps(zones),
+            "continue_after_success": continue_after_success,
             "service_account_json": service_account_json,
         }
 
@@ -497,6 +622,8 @@ class WebPanelApp:
             "target_ips": json.loads(row["target_ips_json"] or "[]"),
             "zones": json.loads(row["zones_json"] or "[]") or self.default_zones(),
             "protected_cloud_ids": json.loads(row["protected_cloud_ids_json"] or "[]"),
+            "protected_folder_ids": json.loads(row["protected_folder_ids_json"] or "[]"),
+            "continue_after_success": bool(row["continue_after_success"]),
             "is_active": bool(row["is_active"]),
             "running": running,
             "has_service_account_json": True,
@@ -515,9 +642,9 @@ class WebPanelApp:
                 INSERT INTO accounts(
                     name, organization_id, billing_account_id, service_cloud_id,
                     roll_mode, target_cloud_id, folder_id, target_cidrs_json, target_ips_json,
-                    zones_json, protected_cloud_ids_json,
+                    zones_json, protected_cloud_ids_json, protected_folder_ids_json, continue_after_success,
                     service_account_json_encrypted, is_active, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
@@ -531,6 +658,8 @@ class WebPanelApp:
                     data["target_ips_json"],
                     data["zones_json"],
                     json.dumps(normalize_protected_cloud_ids(payload.get("protected_cloud_ids", []))),
+                    json.dumps(normalize_protected_folder_ids(payload.get("protected_folder_ids", []))),
+                    1 if data["continue_after_success"] else 0,
                     encrypted,
                     1 if active_count == 0 else 0,
                     now,
@@ -558,6 +687,7 @@ class WebPanelApp:
                 "target_cidrs_json=?",
                 "target_ips_json=?",
                 "zones_json=?",
+                "continue_after_success=?",
                 "updated_at=?",
             ]
             values: List[Any] = [
@@ -571,6 +701,7 @@ class WebPanelApp:
                 data["target_cidrs_json"],
                 data["target_ips_json"],
                 data["zones_json"],
+                1 if data["continue_after_success"] else 0,
                 now,
             ]
             if service_account_json:
@@ -583,16 +714,27 @@ class WebPanelApp:
         return self.public_account(row)
 
     def update_account_isolation(self, account_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if "protected_cloud_ids" not in payload:
-            raise WebPanelError("Укажите protected_cloud_ids.")
-        protected_cloud_ids = normalize_protected_cloud_ids(payload["protected_cloud_ids"])
+        if "protected_cloud_ids" not in payload and "protected_folder_ids" not in payload:
+            raise WebPanelError("Укажите protected_cloud_ids или protected_folder_ids.")
+        protected_cloud_ids: Optional[List[str]] = None
+        protected_folder_ids: Optional[List[str]] = None
+        if "protected_cloud_ids" in payload:
+            protected_cloud_ids = normalize_protected_cloud_ids(payload["protected_cloud_ids"])
+        if "protected_folder_ids" in payload:
+            protected_folder_ids = normalize_protected_folder_ids(payload["protected_folder_ids"])
         now = utc_now()
         with self._lock, self.connect() as conn:
-            self.require_account(conn, account_id)
-            conn.execute(
-                "UPDATE accounts SET protected_cloud_ids_json=?, updated_at=? WHERE id=?",
-                (json.dumps(protected_cloud_ids), now, account_id),
-            )
+            row = self.require_account(conn, account_id)
+            fields = ["updated_at=?"]
+            values: List[Any] = [now]
+            if protected_cloud_ids is not None:
+                fields.insert(0, "protected_cloud_ids_json=?")
+                values.insert(0, json.dumps(protected_cloud_ids))
+            if protected_folder_ids is not None:
+                fields.insert(0, "protected_folder_ids_json=?")
+                values.insert(0, json.dumps(protected_folder_ids))
+            values.append(account_id)
+            conn.execute(f"UPDATE accounts SET {', '.join(fields)} WHERE id=?", values)
             conn.commit()
             row = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
         account = self.public_account(row)
@@ -602,6 +744,38 @@ class WebPanelApp:
                 "id": account["id"],
                 "name": account["name"],
                 "protected_cloud_ids": account["protected_cloud_ids"],
+                "protected_folder_ids": account["protected_folder_ids"],
+            },
+        }
+
+    def update_account_targets(self, account_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+        targets = target_payload(payload)
+        now = utc_now()
+        with self._lock, self.connect() as conn:
+            self.require_account(conn, account_id)
+            conn.execute(
+                """
+                UPDATE accounts
+                SET target_cidrs_json=?, target_ips_json=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    targets["target_cidrs_json"],
+                    targets["target_ips_json"],
+                    now,
+                    account_id,
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+        account = self.public_account(row)
+        return {
+            "ok": True,
+            "account": {
+                "id": account["id"],
+                "name": account["name"],
+                "target_cidrs": account["target_cidrs"],
+                "target_ips": account["target_ips"],
             },
         }
 
@@ -672,15 +846,20 @@ class WebPanelApp:
             encoding="utf-8",
         )
         template = read_json(self.root / "config.example.json")
-        target_cidrs = json.loads(row["target_cidrs_json"] or "[]") or template.get("target_cidrs") or []
+        target_cidrs = json.loads(row["target_cidrs_json"] or "[]")
         target_ips = json.loads(row["target_ips_json"] or "[]")
+        if not target_cidrs and not target_ips:
+            raise WebPanelError("Для запуска укажите хотя бы один целевой CIDR или IP.")
         zones = json.loads(row["zones_json"] or "[]") or self.default_zones()
         protected_cloud_ids = json.loads(row["protected_cloud_ids_json"] or "[]")
+        protected_folder_ids = json.loads(row["protected_folder_ids_json"] or "[]")
         roll_mode = str(row["roll_mode"] or "cloud")
         target_cloud_id = str(row["target_cloud_id"] or "") if roll_mode == "project" else ""
         folder_id = str(row["folder_id"] or "") if roll_mode == "project" else ""
         if target_cloud_id and target_cloud_id in protected_cloud_ids:
             raise WebPanelError("Целевое облако находится в изоляции. Уберите его из изоляции или очистите ID целевого облака.")
+        if folder_id and folder_id in protected_folder_ids:
+            raise WebPanelError("Целевая папка находится в изоляции. Уберите её из изоляции или выберите другой Folder ID.")
         telegram = self.telegram_settings(include_token=True)
         config = dict(template)
         config.update(
@@ -698,7 +877,8 @@ class WebPanelApp:
                 "target_cidrs": target_cidrs,
                 "target_ips": target_ips,
                 "protected_cloud_ids": protected_cloud_ids,
-                "continue_after_success": True,
+                "protected_folder_ids": protected_folder_ids,
+                "continue_after_success": bool(row["continue_after_success"]),
                 "auth": {
                     "service_account_key_file": paths["key"].name,
                     "iam_token_env": "YC_IAM_TOKEN",
@@ -834,6 +1014,229 @@ class WebPanelApp:
         Path(str(run["recreate_file"])).write_text("recreate\n", encoding="utf-8")
         return {"ok": True, "message": "Пересоздание запрошено."}
 
+    def cleanup_attempt_result(self, account_id: int, attempt_id: int) -> Dict[str, Any]:
+        if self.latest_run(account_id, only_active=True):
+            raise WebPanelError("Перед ручным удалением результата остановите активную ротацию.")
+        with self.connect() as conn:
+            account_row = self.require_account(conn, account_id)
+            attempt_row = conn.execute(
+                "SELECT * FROM attempts WHERE id=? AND account_id=?",
+                (attempt_id, account_id),
+            ).fetchone()
+            if attempt_row is None:
+                raise WebPanelNotFound("Попытка не найдена.")
+            account = dict(account_row)
+            attempt = dict(attempt_row)
+
+        if not int(attempt.get("matched") or 0):
+            raise WebPanelError("Ручное удаление доступно только для сохранённого успешного IP.")
+        cloud_id = str(attempt.get("cloud_id") or "").strip()
+        folder_id = str(attempt.get("folder_id") or "").strip()
+        address_id = str(attempt.get("address_id") or "").strip()
+        cleanup_status = str(attempt.get("cleanup_status") or "")
+        cloud_cleanup_status = str(attempt.get("cloud_cleanup_status") or "")
+        configured_project_folder_id = str(account.get("folder_id") or "").strip()
+        configured_project_cloud_id = str(account.get("target_cloud_id") or "").strip()
+        already_cleaned_ip = cleanup_status == "deleted"
+        already_cleaned_cloud = cloud_cleanup_status == "deleted"
+        if already_cleaned_ip and already_cleaned_cloud:
+            return {"ok": True, "attempt": attempt, "message": "Результат и cloud уже помечены как удалённые."}
+        delete_result_folder = bool(folder_id and folder_id != configured_project_folder_id)
+        if not already_cleaned_ip and (not address_id or not folder_id):
+            raise WebPanelError("В истории нет address_id или folder_id для удаления.")
+        if cloud_id and cloud_id == str(account.get("service_cloud_id") or ""):
+            raise WebPanelError("Нельзя удалять ресурс из сервисного облака аккаунта.")
+
+        yc = load_yc_ip_hunter_module()
+        paths = self.runtime_paths(account_id)
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        paths["key"].write_text(
+            self.decrypt_service_account(account["service_account_json_encrypted"]),
+            encoding="utf-8",
+        )
+        cleanup_config = {
+            "auth": {
+                "service_account_key_file": paths["key"].name,
+                "iam_token_env": "YC_IAM_TOKEN",
+            }
+        }
+        client = yc.YandexCloudClient(
+            yc.TokenProvider(cleanup_config, paths["base"]),
+            dry_run=False,
+            operation_timeout_seconds=180,
+            operation_poll_seconds=1.0,
+        )
+
+        def is_expected_cleanup_error(exc: Any) -> bool:
+            text = exc.text().lower()
+            return exc.status == 404 or "not found" in text or "deleted" in text or "deletion" in text
+
+        def mark_cleanup_failed(exc: Exception) -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    "UPDATE attempts SET cleanup_status=?, cleanup_at=?, cleanup_error=? WHERE id=?",
+                    ("failed", utc_now(), str(exc), attempt_id),
+                )
+                conn.commit()
+
+        if not already_cleaned_ip:
+            try:
+                client.delete_address(address_id, wait=True)
+            except yc.ApiError as exc:
+                if not is_expected_cleanup_error(exc):
+                    mark_cleanup_failed(exc)
+                    raise WebPanelError(f"Не удалось удалить reserved address: {exc.message}") from exc
+
+            if delete_result_folder:
+                try:
+                    client.delete_folder(folder_id, immediate=True, wait=False)
+                except yc.ApiError as exc:
+                    if not is_expected_cleanup_error(exc):
+                        mark_cleanup_failed(exc)
+                        raise WebPanelError(f"Не удалось отправить каталог на удаление: {exc.message}") from exc
+
+        cloud_cleanup_result = {
+            "status": cloud_cleanup_status,
+            "error": str(attempt.get("cloud_cleanup_error") or ""),
+        }
+        if not already_cleaned_cloud:
+            cloud_cleanup_result = self.cleanup_disposable_cloud_if_empty(
+                yc=yc,
+                client=client,
+                cloud_id=cloud_id,
+                deleted_folder_id=folder_id,
+                delete_result_folder=delete_result_folder,
+                configured_project_cloud_id=configured_project_cloud_id,
+            )
+
+        with self._lock, self.connect() as conn:
+            row = self.require_account(conn, account_id)
+            protected_cloud_ids = normalize_protected_cloud_ids(json.loads(row["protected_cloud_ids_json"] or "[]"))
+            protected_folder_ids = normalize_protected_folder_ids(json.loads(row["protected_folder_ids_json"] or "[]"))
+            protected_cloud_ids = [value for value in protected_cloud_ids if value != cloud_id]
+            protected_folder_ids = [value for value in protected_folder_ids if value != folder_id]
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE accounts
+                SET protected_cloud_ids_json=?, protected_folder_ids_json=?, updated_at=?
+                WHERE id=?
+                """,
+                (json.dumps(protected_cloud_ids), json.dumps(protected_folder_ids), now, account_id),
+            )
+            conn.execute(
+                "UPDATE attempts SET cleanup_status=?, cleanup_at=?, cleanup_error=? WHERE id=?",
+                ("deleted", now, "", attempt_id),
+            )
+            if cloud_cleanup_result["status"]:
+                conn.execute(
+                    """
+                    UPDATE attempts
+                    SET cloud_cleanup_status=?, cloud_cleanup_at=?, cloud_cleanup_error=?
+                    WHERE id=?
+                    """,
+                    (
+                        cloud_cleanup_result["status"],
+                        now,
+                        cloud_cleanup_result["error"],
+                        attempt_id,
+                    ),
+                )
+            conn.commit()
+
+        if cloud_cleanup_result["status"] == "deleted":
+            message = f"IP {attempt['ip']} удалён, каталог и пустое cloud отправлены на удаление."
+        elif cloud_cleanup_result["status"] == "skipped_not_empty":
+            message = f"IP {attempt['ip']} удалён, каталог отправлен на удаление. Cloud пока не пустое."
+        elif cloud_cleanup_result["status"] == "kept_project_cloud":
+            message = f"IP {attempt['ip']} удалён. Cloud/каталог 1 проекта оставлены."
+        elif cloud_cleanup_result["status"] == "skipped_not_managed":
+            message = f"IP {attempt['ip']} удалён. Cloud не похоже на disposable cloud Redroller, поэтому оставлено."
+        elif cloud_cleanup_result["status"] == "failed":
+            message = f"IP {attempt['ip']} удалён, но cloud не удалось удалить: {cloud_cleanup_result['error']}"
+        else:
+            message = (
+                f"IP {attempt['ip']} удалён, каталог отправлен на удаление."
+                if delete_result_folder
+                else f"IP {attempt['ip']} удалён. Каталог 1 проекта оставлен, защита снята."
+            )
+        return {
+            "ok": True,
+            "message": message,
+            "attempt": {
+                "id": attempt_id,
+                "ip": attempt["ip"],
+                "cloud_id": cloud_id,
+                "folder_id": folder_id,
+                "address_id": address_id,
+                "cleanup_status": "deleted",
+                "folder_cleanup": "delete_submitted" if delete_result_folder else "kept_project_folder",
+                "cloud_cleanup_status": cloud_cleanup_result["status"],
+            },
+        }
+
+    def cleanup_disposable_cloud_if_empty(
+        self,
+        *,
+        yc: Any,
+        client: Any,
+        cloud_id: str,
+        deleted_folder_id: str,
+        delete_result_folder: bool,
+        configured_project_cloud_id: str,
+    ) -> Dict[str, str]:
+        if not cloud_id:
+            return {"status": "", "error": ""}
+        if not delete_result_folder or (configured_project_cloud_id and cloud_id == configured_project_cloud_id):
+            return {"status": "kept_project_cloud", "error": ""}
+
+        def expected_deleted_error(exc: Any) -> bool:
+            text = exc.text().lower()
+            return exc.status == 404 or "not found" in text or "deleted" in text or "deletion" in text
+
+        try:
+            cloud = client.get_cloud(cloud_id)
+        except yc.ApiError as exc:
+            if expected_deleted_error(exc):
+                return {"status": "deleted", "error": ""}
+            return {"status": "failed", "error": exc.message}
+
+        template = read_json(self.root / "config.example.json")
+        name_prefix = str(template.get("cloud_name_prefix") or "ip-hunter")
+        labels = cloud.get("labels") or {}
+        name = str(cloud.get("name") or "")
+        if labels.get("managed-by") != "yc-ip-hunter" and not name.startswith(name_prefix):
+            return {"status": "skipped_not_managed", "error": ""}
+
+        try:
+            folders = client.list_folders(cloud_id)
+        except yc.ApiError as exc:
+            if expected_deleted_error(exc):
+                return {"status": "deleted", "error": ""}
+            return {"status": "failed", "error": exc.message}
+
+        active_folder_ids = []
+        for folder in folders:
+            folder_id = str(folder.get("id") or "")
+            if folder_id and folder_id == deleted_folder_id:
+                continue
+            status = str(folder.get("status") or "ACTIVE").upper()
+            if status not in {"DELETING", "PENDING_DELETION"}:
+                active_folder_ids.append(folder_id or str(folder.get("name") or "unknown"))
+        if active_folder_ids:
+            return {"status": "skipped_not_empty", "error": ", ".join(active_folder_ids[:5])}
+
+        try:
+            client.delete_cloud(cloud_id, immediate=True, wait=False)
+        except yc.ApiError as exc:
+            text = exc.text().lower()
+            if expected_deleted_error(exc):
+                return {"status": "deleted", "error": ""}
+            if "folder" in text or "resource" in text or "not empty" in text:
+                return {"status": "skipped_not_empty", "error": exc.message}
+            return {"status": "failed", "error": exc.message}
+        return {"status": "deleted", "error": ""}
+
     def sync_attempts(self, run: Optional[Dict[str, Any]]) -> None:
         if not run:
             return
@@ -842,10 +1245,6 @@ class WebPanelApp:
         if not isinstance(recent, list):
             return
         with self.connect() as conn:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE run_id=?",
-                (int(run["id"]),),
-            ).fetchone()[0]
             for offset, item in enumerate(recent, start=1):
                 if not isinstance(item, dict):
                     continue
@@ -866,7 +1265,7 @@ class WebPanelApp:
                         int(run["id"]),
                         int(run["account_id"]),
                         attempt_key,
-                        existing + offset,
+                        offset,
                         str(item.get("at") or ""),
                         str(item.get("ip") or ""),
                         str(item.get("zone") or ""),
@@ -876,6 +1275,10 @@ class WebPanelApp:
                         1 if item.get("matched") else 0,
                     ),
                 )
+                conn.execute(
+                    "UPDATE attempts SET attempt_number=? WHERE attempt_key=?",
+                    (offset, attempt_key),
+                )
             conn.commit()
 
     def sync_auto_protected_clouds(self, account_id: int, run: Optional[Dict[str, Any]]) -> bool:
@@ -883,13 +1286,20 @@ class WebPanelApp:
             return False
         state_path = Path(str(run["state_path"]))
         state = read_json(state_path)
-        auto_values = state.get("auto_protected_cloud_ids")
-        if not isinstance(auto_values, list):
+        auto_cloud_values = state.get("auto_protected_cloud_ids")
+        auto_folder_values = state.get("auto_protected_folder_ids")
+        has_cloud_values = isinstance(auto_cloud_values, list)
+        has_folder_values = isinstance(auto_folder_values, list)
+        if not has_cloud_values and not has_folder_values:
             return False
-        auto_ids = normalize_protected_cloud_ids(auto_values)
-        if not auto_ids:
-            if auto_values:
+        auto_cloud_ids = normalize_protected_cloud_ids(auto_cloud_values) if has_cloud_values else []
+        auto_folder_ids = normalize_protected_folder_ids(auto_folder_values) if has_folder_values else []
+        if not auto_cloud_ids and not auto_folder_ids:
+            if has_cloud_values and auto_cloud_values:
                 state["auto_protected_cloud_ids"] = []
+            if has_folder_values and auto_folder_values:
+                state["auto_protected_folder_ids"] = []
+            if (has_cloud_values and auto_cloud_values) or (has_folder_values and auto_folder_values):
                 write_json_atomic(state_path, state)
             return False
 
@@ -897,21 +1307,35 @@ class WebPanelApp:
         with self._lock, self.connect() as conn:
             row = self.require_account(conn, account_id)
             current = normalize_protected_cloud_ids(json.loads(row["protected_cloud_ids_json"] or "[]"))
-            merged = list(current)
-            seen = set(current)
-            for cloud_id in auto_ids:
-                if cloud_id not in seen:
-                    merged.append(cloud_id)
-                    seen.add(cloud_id)
-            if merged != current:
+            current_folders = normalize_protected_folder_ids(json.loads(row["protected_folder_ids_json"] or "[]"))
+            merged_clouds = list(current)
+            seen_clouds = set(current)
+            for cloud_id in auto_cloud_ids:
+                if cloud_id not in seen_clouds:
+                    merged_clouds.append(cloud_id)
+                    seen_clouds.add(cloud_id)
+            merged_folders = list(current_folders)
+            seen_folders = set(current_folders)
+            for folder_id in auto_folder_ids:
+                if folder_id not in seen_folders:
+                    merged_folders.append(folder_id)
+                    seen_folders.add(folder_id)
+            if merged_clouds != current or merged_folders != current_folders:
                 conn.execute(
-                    "UPDATE accounts SET protected_cloud_ids_json=?, updated_at=? WHERE id=?",
-                    (json.dumps(merged), utc_now(), account_id),
+                    """
+                    UPDATE accounts
+                    SET protected_cloud_ids_json=?, protected_folder_ids_json=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (json.dumps(merged_clouds), json.dumps(merged_folders), utc_now(), account_id),
                 )
                 conn.commit()
                 changed = True
 
-        state["auto_protected_cloud_ids"] = []
+        if has_cloud_values:
+            state["auto_protected_cloud_ids"] = []
+        if has_folder_values:
+            state["auto_protected_folder_ids"] = []
         write_json_atomic(state_path, state)
         return changed
 
@@ -924,7 +1348,23 @@ class WebPanelApp:
                 """,
                 (account_id, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        attempts = [dict(row) for row in reversed(rows)]
+        with self.connect() as conn:
+            for display_number, attempt in enumerate(attempts, start=1):
+                seen_before = bool(
+                    conn.execute(
+                        """
+                        SELECT 1 FROM attempts
+                        WHERE account_id=? AND ip=? AND id<?
+                        LIMIT 1
+                        """,
+                        (account_id, attempt["ip"], attempt["id"]),
+                    ).fetchone()
+                )
+                attempt["ip_seen_before"] = seen_before
+                attempt["ip_uniqueness"] = "repeat" if seen_before else "unique"
+                attempt["display_number"] = display_number
+        return attempts
 
     def status_payload(self) -> Dict[str, Any]:
         account = self.active_account()
@@ -935,6 +1375,7 @@ class WebPanelApp:
                 "running": False,
                 "current_ip": "-",
                 "target_subnet": "-",
+                "target_summary": "-",
                 "target_count": 0,
                 "reel": [],
                 "attempts": [],
@@ -955,7 +1396,10 @@ class WebPanelApp:
         )
         target_cidrs = account.get("target_cidrs") or []
         target_ips = account.get("target_ips") or []
-        target_subnet = target_cidrs[0] if target_cidrs else (target_ips[0] if target_ips else "-")
+        target_items = target_ips + target_cidrs
+        target_subnet = target_items[0] if target_items else "-"
+        target_capacity = target_address_count(target_cidrs, target_ips)
+        target_summary = format_target_address_count(target_capacity)
         logs = []
         if run:
             logs = read_tail(Path(str(run["log_path"])), 40)
@@ -986,7 +1430,9 @@ class WebPanelApp:
             "running": running,
             "current_ip": current_ip,
             "target_subnet": target_subnet,
+            "target_summary": target_summary,
             "target_count": len(target_cidrs) + len(target_ips),
+            "target_address_count": target_capacity,
             "reel": reel,
             "attempts": attempts[-25:],
             "logs": logs[-40:],
@@ -1059,6 +1505,15 @@ class WebPanelHandler(BaseHTTPRequestHandler):
             if path == "/api/settings/telegram/test":
                 self.send_json(self.app.test_telegram_settings())
                 return
+            cleanup_match = re.fullmatch(r"/api/accounts/(\d+)/attempts/(\d+)/cleanup", path)
+            if cleanup_match:
+                self.send_json(
+                    self.app.cleanup_attempt_result(
+                        int(cleanup_match.group(1)),
+                        int(cleanup_match.group(2)),
+                    )
+                )
+                return
             match = re.fullmatch(r"/api/accounts/(\d+)/(activate|spin|stop|recreate)", path)
             if not match:
                 self.send_json({"ok": False, "error": "Не найдено."}, status=404)
@@ -1085,6 +1540,10 @@ class WebPanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/settings/telegram":
                 self.send_json(self.app.update_telegram_settings(self.read_json_body()))
+                return
+            targets_match = re.fullmatch(r"/api/accounts/(\d+)/targets", path)
+            if targets_match:
+                self.send_json(self.app.update_account_targets(int(targets_match.group(1)), self.read_json_body()))
                 return
             match = re.fullmatch(r"/api/accounts/(\d+)", path)
             if not match:

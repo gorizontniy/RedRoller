@@ -25,7 +25,16 @@ $LegacyRootExe = Join-Path $ProjectRoot "IP_ROTATOR.V1.exe"
 $LegacyDistExe = Join-Path $FinalDistPath "IP_ROTATOR.V1.exe"
 
 try {
-    if (-not (python -m PyInstaller --version 2>$null)) {
+    $PyInstallerReady = $false
+    try {
+        python -m PyInstaller --version *> $null
+        $PyInstallerReady = ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        $PyInstallerReady = $false
+    }
+
+    if (-not $PyInstallerReady) {
         python -m pip install pyinstaller
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE

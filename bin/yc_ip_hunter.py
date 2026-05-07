@@ -429,6 +429,20 @@ class YandexCloudClient:
             operation_hint="folder-get",
         )
 
+    def list_folders(self, cloud_id: str) -> List[Dict[str, Any]]:
+        folders: List[Dict[str, Any]] = []
+        page_token = ""
+        while True:
+            query = {"cloudId": cloud_id, "pageSize": "1000"}
+            if page_token:
+                query["pageToken"] = page_token
+            url = f"{RESOURCE_MANAGER_URL}/folders?{urllib.parse.urlencode(query)}"
+            response = self.request("GET", url, body=None, operation_hint="folder-list")
+            folders.extend(response.get("folders") or [])
+            page_token = str(response.get("nextPageToken") or "")
+            if not page_token:
+                return folders
+
     def delete_cloud(self, cloud_id: str, immediate: bool, wait: bool = True) -> Optional[Dict[str, Any]]:
         quoted = urllib.parse.quote(cloud_id, safe="")
         url = f"{RESOURCE_MANAGER_URL}/clouds/{quoted}"
@@ -839,6 +853,9 @@ class IpHunter:
         protected_cloud_ids = self.config.get("protected_cloud_ids") or []
         if not isinstance(protected_cloud_ids, list):
             raise ConfigError("protected_cloud_ids must be a list.")
+        protected_folder_ids = self.config.get("protected_folder_ids") or []
+        if not isinstance(protected_folder_ids, list):
+            raise ConfigError("protected_folder_ids must be a list.")
         if not self.config.get("target_ips") and not self.config.get("target_cidrs"):
             self.config["target_cidrs"] = DEFAULT_TARGET_CIDRS
         if int(self.config.get("max_ip_candidates_per_cloud", 1000)) <= 0:
@@ -1003,7 +1020,7 @@ class IpHunter:
                         continue
                     return 0
 
-                self.submit_cloud_delete(cloud_id)
+                self.submit_cloud_delete(cloud_id, folder_id)
                 self.sleep_backoff(float(self.config.get("cloud_iteration_sleep_seconds", 45)))
                 backoff = base_backoff
             except RateLimitHit as exc:
@@ -1011,7 +1028,7 @@ class IpHunter:
                 if address_id:
                     self.submit_address_delete(address_id)
                 if cloud_id:
-                    self.submit_cloud_delete(cloud_id)
+                    self.submit_cloud_delete(cloud_id, folder_id)
                 self.sleep_backoff(backoff)
                 backoff = min(max_backoff, backoff * 2)
             except ApiError as exc:
@@ -1047,7 +1064,7 @@ class IpHunter:
             try:
                 if use_existing_scope:
                     cloud_id, folder_id = self.ensure_hybrid_address_scope(iteration)
-                    managed_cloud = self.can_delete_hybrid_cloud(cloud_id)
+                    managed_cloud = self.can_delete_hybrid_cloud(cloud_id, folder_id)
                     use_existing_scope = False
                 else:
                     if not self.wait_for_cloud_slot():
@@ -1094,7 +1111,7 @@ class IpHunter:
                     cloud_id,
                 )
                 if managed_cloud:
-                    self.submit_cloud_delete(cloud_id)
+                    self.submit_cloud_delete(cloud_id, folder_id)
                     done = int(self.state.get("cloud_recreations_done", 0)) + 1
                     self.state["cloud_recreations_done"] = done
                     self.persist_state()
@@ -1103,7 +1120,7 @@ class IpHunter:
             except RateLimitHit as exc:
                 LOGGER.warning("Rate limit hit during hybrid rotation: %s", exc)
                 if cloud_id and managed_cloud:
-                    self.submit_cloud_delete(cloud_id)
+                    self.submit_cloud_delete(cloud_id, folder_id)
                     done = int(self.state.get("cloud_recreations_done", 0)) + 1
                     self.state["cloud_recreations_done"] = done
                     self.persist_state()
@@ -1112,7 +1129,7 @@ class IpHunter:
             except QuotaHit as exc:
                 LOGGER.warning("Quota hit during hybrid rotation: %s", exc)
                 if cloud_id and managed_cloud:
-                    self.submit_cloud_delete(cloud_id)
+                    self.submit_cloud_delete(cloud_id, folder_id)
                 self.sleep_backoff(backoff)
                 backoff = min(max_backoff, backoff * 2)
             except ApiError as exc:
@@ -1154,7 +1171,18 @@ class IpHunter:
         if not folder_id and state_current_cloud_id == cloud_id:
             folder_id = str(self.state.get("current_folder_id") or "")
         if folder_id:
-            if not explicit_folder_id and not self.saved_folder_is_usable(folder_id, cloud_id):
+            if folder_id in self.effective_protected_folder_ids():
+                if explicit_folder_id:
+                    raise ConfigError(f"Refusing to use protected folder {folder_id}.")
+                LOGGER.warning(
+                    "Saved folder %s is protected; ignoring it and creating a fresh working folder.",
+                    folder_id,
+                )
+                self.state.pop("hybrid_folder_id", None)
+                self.state.pop("current_folder_id", None)
+                self.persist_state()
+                folder_id = ""
+            elif not explicit_folder_id and not self.saved_folder_is_usable(folder_id, cloud_id):
                 LOGGER.warning(
                     "Saved folder %s is not usable; creating a fresh working folder.",
                     folder_id,
@@ -1224,11 +1252,13 @@ class IpHunter:
             return False
         return True
 
-    def can_delete_hybrid_cloud(self, cloud_id: str) -> bool:
+    def can_delete_hybrid_cloud(self, cloud_id: str, folder_id: str = "") -> bool:
         service_cloud_id = str(self.config.get("service_cloud_id") or "")
         if service_cloud_id and cloud_id == service_cloud_id:
             return False
         if cloud_id in self.effective_protected_cloud_ids():
+            return False
+        if folder_id and folder_id in self.effective_protected_folder_ids():
             return False
         return True
 
@@ -1247,6 +1277,21 @@ class IpHunter:
     def effective_protected_cloud_ids(self) -> set[str]:
         return self.protected_cloud_ids() | self.auto_protected_cloud_ids()
 
+    def protected_folder_ids(self) -> set[str]:
+        values = self.config.get("protected_folder_ids") or []
+        if not isinstance(values, list):
+            return set()
+        return {str(value).strip() for value in values if str(value).strip()}
+
+    def auto_protected_folder_ids(self) -> set[str]:
+        values = self.state.get("auto_protected_folder_ids") or []
+        if not isinstance(values, list):
+            return set()
+        return {str(value).strip() for value in values if str(value).strip()}
+
+    def effective_protected_folder_ids(self) -> set[str]:
+        return self.protected_folder_ids() | self.auto_protected_folder_ids()
+
     def should_continue_after_success(self) -> bool:
         return config_bool(self.config.get("continue_after_success"), default=False)
 
@@ -1255,15 +1300,23 @@ class IpHunter:
 
     def protect_success_cloud(self, result: AttemptResult) -> None:
         cloud_id = str(result.cloud_id or "").strip()
-        if not cloud_id:
-            return
-        values = self.state.setdefault("auto_protected_cloud_ids", [])
-        if not isinstance(values, list):
-            values = []
-            self.state["auto_protected_cloud_ids"] = values
-        existing = {str(value).strip() for value in values if str(value).strip()}
-        if cloud_id not in existing:
-            values.append(cloud_id)
+        folder_id = str(result.folder_id or "").strip()
+        if cloud_id:
+            values = self.state.setdefault("auto_protected_cloud_ids", [])
+            if not isinstance(values, list):
+                values = []
+                self.state["auto_protected_cloud_ids"] = values
+            existing = {str(value).strip() for value in values if str(value).strip()}
+            if cloud_id not in existing:
+                values.append(cloud_id)
+        if folder_id:
+            folder_values = self.state.setdefault("auto_protected_folder_ids", [])
+            if not isinstance(folder_values, list):
+                folder_values = []
+                self.state["auto_protected_folder_ids"] = folder_values
+            existing_folders = {str(value).strip() for value in folder_values if str(value).strip()}
+            if folder_id not in existing_folders:
+                folder_values.append(folder_id)
 
     def run_address_rotation_in_cloud(
         self, cloud_id: str, folder_id: str, cloud_iteration: int
@@ -1543,7 +1596,7 @@ class IpHunter:
         matched = ip_matches_targets(str(allocated_ip), self.config.get("target_ips") or [], target_networks)
         self.state["last_address_id"] = address_id
         self.state["last_allocated_ip"] = allocated_ip
-        self.track_cloud_address(cloud_id, address_id, str(allocated_ip))
+        self.track_cloud_address(cloud_id, folder_id, address_id, str(allocated_ip))
         self.record_allocation_result(
             cloud_id=cloud_id,
             folder_id=folder_id,
@@ -1622,8 +1675,7 @@ class IpHunter:
 
     def save_success(self, result: AttemptResult) -> None:
         self.state["success"] = dataclasses.asdict(result)
-        if self.should_continue_after_success():
-            self.protect_success_cloud(result)
+        self.protect_success_cloud(result)
         self.persist_state()
         self.notify_success(result)
 
@@ -1697,13 +1749,14 @@ class IpHunter:
             )
         )
 
-    def track_cloud_address(self, cloud_id: str, address_id: str, ip: str) -> None:
+    def track_cloud_address(self, cloud_id: str, folder_id: str, address_id: str, ip: str) -> None:
         addresses_by_cloud = self.state.setdefault("addresses_by_cloud", {})
         cloud_addresses = addresses_by_cloud.setdefault(cloud_id, [])
         if not any(item.get("address_id") == address_id for item in cloud_addresses):
             cloud_addresses.append(
                 {
                     "address_id": address_id,
+                    "folder_id": folder_id,
                     "ip": ip,
                     "at": utc_now_rfc3339(),
                     "delete_submitted": False,
@@ -1735,13 +1788,17 @@ class IpHunter:
     def submit_folder_delete(self, folder_id: str) -> None:
         if not folder_id:
             return
+        if folder_id in self.effective_protected_folder_ids():
+            LOGGER.warning("Skipping delete for protected folder %s.", folder_id)
+            return
         LOGGER.warning("Submitting async delete for folder %s.", folder_id)
         self.client.delete_folder(folder_id, immediate=True, wait=False)
 
-    def submit_cloud_delete(self, cloud_id: str) -> None:
+    def submit_cloud_delete(self, cloud_id: str, folder_id: str = "") -> None:
         if not cloud_id:
             return
         self.ensure_managed_cloud_delete_allowed(cloud_id)
+        self.ensure_cloud_delete_does_not_include_protected_folder(cloud_id, folder_id)
         self.cleanup_cloud_addresses(cloud_id)
         LOGGER.warning("Submitting async delete for cloud %s.", cloud_id)
         self.client.delete_cloud(cloud_id, immediate=True, wait=False)
@@ -1749,6 +1806,23 @@ class IpHunter:
             {"cloud_id": cloud_id, "at": utc_now_rfc3339()}
         )
         self.persist_state()
+
+    def ensure_cloud_delete_does_not_include_protected_folder(self, cloud_id: str, folder_id: str = "") -> None:
+        protected_folders = self.effective_protected_folder_ids()
+        candidate_folder_ids = []
+        if folder_id:
+            candidate_folder_ids.append(folder_id)
+        state_cloud_id = str(self.state.get("hybrid_cloud_id") or self.state.get("current_cloud_id") or "")
+        if state_cloud_id == cloud_id:
+            for key in ("hybrid_folder_id", "current_folder_id"):
+                value = str(self.state.get(key) or "")
+                if value:
+                    candidate_folder_ids.append(value)
+        for candidate in candidate_folder_ids:
+            if candidate in protected_folders:
+                raise ConfigError(
+                    f"Refusing to delete cloud {cloud_id}: it contains protected folder {candidate}."
+                )
 
     def cleanup_cloud_addresses(self, cloud_id: str) -> None:
         if cloud_id in self.effective_protected_cloud_ids():
@@ -1764,11 +1838,22 @@ class IpHunter:
         cleanup_sleep = float(self.config.get("pre_cloud_delete_cleanup_sleep_seconds", 3))
         address_ids = []
         seen = set()
+        protected_folders = self.effective_protected_folder_ids()
+        skipped_protected_folders = set()
         for item in cloud_addresses:
+            folder_id = str(item.get("folder_id") or "")
+            if folder_id and folder_id in protected_folders:
+                skipped_protected_folders.add(folder_id)
+                continue
             address_id = str(item.get("address_id") or "")
             if address_id and address_id not in seen:
                 address_ids.append(address_id)
                 seen.add(address_id)
+        if skipped_protected_folders:
+            LOGGER.warning(
+                "Skipping address cleanup in protected folders: %s.",
+                ", ".join(sorted(skipped_protected_folders)),
+            )
 
         LOGGER.info(
             "Pre-delete cleanup: submitting delete for %s known addresses in cloud %s.",
@@ -2070,6 +2155,11 @@ class IpHunter:
             raise ConfigError(
                 "Refusing to delete cloud without --yes-delete-cloud."
             )
+        self.ensure_managed_cloud_delete_allowed(str(old_cloud_id))
+        state_cloud_id = str(self.state.get("hybrid_cloud_id") or self.state.get("current_cloud_id") or "")
+        if state_cloud_id == old_cloud_id:
+            state_folder_id = str(self.state.get("hybrid_folder_id") or self.state.get("current_folder_id") or "")
+            self.ensure_cloud_delete_does_not_include_protected_folder(old_cloud_id, state_folder_id)
 
         immediate = bool(self.config.get("immediate_delete_cloud", True))
         LOGGER.warning("Deleting cloud %s (immediate=%s).", old_cloud_id, immediate)

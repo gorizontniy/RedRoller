@@ -53,6 +53,8 @@
   "allocation_mode": "random",
   "delete_unmatched_addresses": true,
   "max_ip_candidates_per_cloud": 1000,
+  "protected_cloud_ids": [],
+  "protected_folder_ids": [],
   "max_cloud_recreations": 10,
   "allow_delete_cloud": false,
   "immediate_delete_cloud": true,
