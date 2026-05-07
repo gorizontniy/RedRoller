@@ -387,7 +387,7 @@ class ControlBotTests(unittest.TestCase):
             )
             control = bot.ControlBot(config_path)
             control.api = mock.Mock()
-            control.api.download_file.return_value = b'{"id":"key-id"}'
+            control.api.download_file.return_value = b'{"id":"key-id","private_key":"pk","service_account_id":"sa-id"}'
 
             control.finish_add_wizard(
                 1,
@@ -436,7 +436,7 @@ class ControlBotTests(unittest.TestCase):
             )
             control = bot.ControlBot(config_path)
             control.api = mock.Mock()
-            control.api.download_file.return_value = b'{"id":"key-id"}'
+            control.api.download_file.return_value = b'{"id":"key-id","private_key":"pk","service_account_id":"sa-id"}'
 
             with mock.patch.object(bot, "write_json_atomic", wraps=bot.write_json_atomic) as write_atomic:
                 control.finish_add_wizard(
