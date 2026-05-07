@@ -9,6 +9,7 @@ const state = {
   telegram: null,
 };
 
+const DONATION_URL = "https://dalink.to/gorizontniy";
 const TON_DONATION_WALLET = "UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z";
 
 const $ = (id) => document.getElementById(id);
@@ -47,6 +48,11 @@ async function copyText(text) {
 async function copyTonWallet() {
   await copyText(TON_DONATION_WALLET);
   showToast("TON-кошелёк скопирован");
+}
+
+async function copyDonationLink() {
+  await copyText(DONATION_URL);
+  showToast("Ссылка DaLink скопирована");
 }
 
 async function api(path, options = {}) {
@@ -598,6 +604,11 @@ function switchTab(name) {
   });
 }
 
+function openSupportBlock() {
+  switchTab("docs");
+  $("supportBlock").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function toggleLog(show) {
   $("logPanel").classList.toggle("hidden", !show);
 }
@@ -632,6 +643,8 @@ function attachEvents() {
   $("spinBtn").addEventListener("click", () => spin().catch((error) => showToast(error.message)));
   $("stopBtn").addEventListener("click", () => stopRun().catch((error) => showToast(error.message)));
   $("recreateBtn").addEventListener("click", () => recreateRun().catch((error) => showToast(error.message)));
+  $("supportBtn").addEventListener("click", openSupportBlock);
+  $("copyDonationLinkBtn").addEventListener("click", () => copyDonationLink().catch((error) => showToast(error.message)));
   $("copyTonWalletBtn").addEventListener("click", () => copyTonWallet().catch((error) => showToast(error.message)));
   $("logToggleBtn").addEventListener("click", () => toggleLog(true));
   $("logCloseBtn").addEventListener("click", () => toggleLog(false));
