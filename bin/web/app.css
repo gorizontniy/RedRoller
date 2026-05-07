@@ -564,6 +564,9 @@ select:focus {
 }
 
 .donation-button span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
   font-size: 34px;
   line-height: 1;
 }

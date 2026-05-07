@@ -1292,6 +1292,7 @@ class WebPanelTests(unittest.TestCase):
         self.assertIn("supportBlock", index)
         self.assertIn("donation-alerts-button", index)
         self.assertIn("ton-button", index)
+        self.assertIn("DONATE", index)
         self.assertIn("copyDonationLinkBtn", index)
         self.assertIn("copyTonWalletBtn", index)
         self.assertIn("UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z", index)
