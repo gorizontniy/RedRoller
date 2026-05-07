@@ -35,6 +35,23 @@ TON: `UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z`
 
 ---
 
+## Соавтор и благодарности
+
+<p align="center">
+  <a href="https://github.com/stafilakok">
+    <img alt="Соавтор stafilakok" src="https://img.shields.io/badge/co--author-stafilakok-181717?style=for-the-badge&logo=github">
+  </a>
+  <a href="https://t.me/whitelistRKN">
+    <img alt="Спасибо whitelistRKN" src="https://img.shields.io/badge/thanks-whitelistRKN-26A5E4?style=for-the-badge&logo=telegram">
+  </a>
+</p>
+
+Соавтор проекта: [@stafilakok](https://github.com/stafilakok).
+
+Отдельное спасибо Telegram-каналу [Whitelist RKN](https://t.me/whitelistRKN) за поддержку проекта.
+
+---
+
 ## ✦ Идея
 
 **Redroller** превращает ручную охоту за нужным IPv4 в управляемое локальное приложение.
