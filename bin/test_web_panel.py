@@ -1,6 +1,7 @@
 import importlib.util
 import contextlib
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -107,6 +108,85 @@ class WebPanelTests(unittest.TestCase):
             self.assertIn("continue_after_success", columns)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_imports_existing_config_json_into_empty_panel_database(self):
+        app_root = fresh_test_dir("web-import-config-root")
+        runtime = app_root / "runtime"
+        try:
+            shutil.copyfile(MODULE_PATH.with_name("config.example.json"), app_root / "config.example.json")
+            (app_root / "sa-key.json").write_text(sample_key(), encoding="utf-8")
+            config_path = app_root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Imported manual config",
+                        "dry_run": True,
+                        "rotation_mode": "cloud",
+                        "organization_id": "org-from-config",
+                        "billing_account_id": "billing-from-config",
+                        "service_cloud_id": "service-cloud-from-config",
+                        "zones": ["ru-central1-b", "ru-central1-d"],
+                        "target_cidrs": ["203.0.113.0/24"],
+                        "target_ips": ["198.51.100.42"],
+                        "protected_cloud_ids": ["protected-cloud"],
+                        "protected_folder_ids": ["protected-folder"],
+                        "max_addresses_per_cloud": 17,
+                        "max_parallel_clouds": 2,
+                        "continue_after_success": True,
+                        "auth": {"service_account_key_file": "sa-key.json"},
+                        "notifications": {
+                            "enabled": True,
+                            "telegram": {
+                                "enabled": True,
+                                "bot_token_env": "TELEGRAM_BOT_TOKEN",
+                                "chat_id": "chat-from-config",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {web.USER_CONFIG_ENV: str(config_path), "TELEGRAM_BOT_TOKEN": "token-from-env"},
+            ):
+                app = web.WebPanelApp(
+                    root=app_root,
+                    runtime_dir=runtime,
+                    db_path=runtime / "panel.sqlite3",
+                    web_dir=MODULE_PATH.parent / "web",
+                    python="python",
+                )
+                accounts = app.list_accounts()
+                self.assertEqual(len(accounts), 1)
+                account = accounts[0]
+                self.assertEqual(account["name"], "Imported manual config")
+                self.assertEqual(account["organization_id"], "org-from-config")
+                self.assertEqual(account["billing_account_id"], "billing-from-config")
+                self.assertEqual(account["service_cloud_id"], "service-cloud-from-config")
+                self.assertEqual(account["zones"], ["ru-central1-b", "ru-central1-d"])
+                self.assertEqual(account["target_cidrs"], ["203.0.113.0/24"])
+                self.assertEqual(account["target_ips"], ["198.51.100.42"])
+                self.assertEqual(account["protected_cloud_ids"], ["protected-cloud"])
+                self.assertEqual(account["protected_folder_ids"], ["protected-folder"])
+                self.assertTrue(account["continue_after_success"])
+
+                paths = app.build_runtime_files(account["id"])
+                runtime_config = json.loads(paths["config"].read_text(encoding="utf-8"))
+                self.assertFalse(runtime_config["dry_run"])
+                self.assertEqual(runtime_config["organization_id"], "org-from-config")
+                self.assertEqual(runtime_config["max_addresses_per_cloud"], 17)
+                self.assertEqual(runtime_config["max_parallel_clouds"], 2)
+                self.assertEqual(runtime_config["target_cidrs"], ["203.0.113.0/24"])
+                self.assertEqual(runtime_config["target_ips"], ["198.51.100.42"])
+                self.assertEqual(runtime_config["auth"]["service_account_key_file"], "sa-key.json")
+                runtime_config_text = paths["config"].read_text(encoding="utf-8")
+                self.assertNotIn('"bot_token":', runtime_config_text)
+                self.assertNotIn("token-from-env", runtime_config_text)
+                self.assertEqual(app.runner_env()[web.TELEGRAM_TOKEN_ENV], "token-from-env")
+        finally:
+            shutil.rmtree(app_root, ignore_errors=True)
 
     def test_account_crud_and_activation(self):
         root = fresh_test_dir("web-crud")
