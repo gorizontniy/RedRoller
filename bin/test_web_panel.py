@@ -1291,6 +1291,7 @@ class WebPanelTests(unittest.TestCase):
         self.assertIn("copyTonWalletBtn", index)
         self.assertIn("UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z", index)
         self.assertIn("TON-кошелёк скопирован", app_js)
+        self.assertIn("execCommand(\"copy\")", app_js)
         self.assertIn("Скачать файл с ключами", index)
         self.assertIn("Ваш закрытый ключ", index)
         self.assertIn("successMode", index)

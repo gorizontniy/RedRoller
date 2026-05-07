@@ -20,9 +20,14 @@ function showToast(message) {
   setTimeout(() => toast.classList.add("hidden"), 3500);
 }
 
-function copyText(text) {
+async function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
-    return navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      console.warn("Clipboard API write failed, falling back to legacy copy.", error);
+    }
   }
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -32,9 +37,11 @@ function copyText(text) {
   textarea.style.top = "0";
   document.body.appendChild(textarea);
   textarea.select();
-  document.execCommand("copy");
+  const copied = document.execCommand("copy");
   textarea.remove();
-  return Promise.resolve();
+  if (!copied) {
+    throw new Error("Не удалось скопировать TON-кошелёк");
+  }
 }
 
 async function copyTonWallet() {
