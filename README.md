@@ -14,6 +14,27 @@
 
 ---
 
+## Поддержать проект
+
+Если Redroller оказался полезен и хочется ускорить развитие проекта, можно поддержать автора:
+
+<p align="center">
+  <a href="https://dalink.to/gorizontniy">
+    <img alt="Поддержать через DaLink" src="https://img.shields.io/badge/support-DaLink-af000c?style=for-the-badge">
+  </a>
+  <a href="https://tonviewer.com/UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z">
+    <img alt="TON wallet" src="https://img.shields.io/badge/TON-wallet-0098EA?style=for-the-badge">
+  </a>
+</p>
+
+DaLink: [dalink.to/gorizontniy](https://dalink.to/gorizontniy)
+
+TON: `UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z`
+
+Спасибо за любую поддержку. Она помогает доводить Redroller до нормального релиза, тестировать live-сценарии и двигать проект к multi-provider control center.
+
+---
+
 ## ✦ Идея
 
 **Redroller** превращает ручную охоту за нужным IPv4 в управляемое локальное приложение.

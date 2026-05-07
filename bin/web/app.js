@@ -9,6 +9,9 @@ const state = {
   telegram: null,
 };
 
+const DONATION_URL = "https://dalink.to/gorizontniy";
+const TON_DONATION_WALLET = "UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z";
+
 const $ = (id) => document.getElementById(id);
 
 function showToast(message) {
@@ -16,6 +19,40 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.remove("hidden");
   setTimeout(() => toast.classList.add("hidden"), 3500);
+}
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      console.warn("Clipboard API write failed, falling back to legacy copy.", error);
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) {
+    throw new Error("Не удалось скопировать TON-кошелёк");
+  }
+}
+
+async function copyTonWallet() {
+  await copyText(TON_DONATION_WALLET);
+  showToast("TON-кошелёк скопирован");
+}
+
+async function copyDonationLink() {
+  await copyText(DONATION_URL);
+  showToast("Ссылка DaLink скопирована");
 }
 
 async function api(path, options = {}) {
@@ -567,6 +604,11 @@ function switchTab(name) {
   });
 }
 
+function openSupportBlock() {
+  switchTab("docs");
+  $("supportBlock").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function toggleLog(show) {
   $("logPanel").classList.toggle("hidden", !show);
 }
@@ -601,6 +643,9 @@ function attachEvents() {
   $("spinBtn").addEventListener("click", () => spin().catch((error) => showToast(error.message)));
   $("stopBtn").addEventListener("click", () => stopRun().catch((error) => showToast(error.message)));
   $("recreateBtn").addEventListener("click", () => recreateRun().catch((error) => showToast(error.message)));
+  $("supportBtn").addEventListener("click", openSupportBlock);
+  $("copyDonationLinkBtn").addEventListener("click", () => copyDonationLink().catch((error) => showToast(error.message)));
+  $("copyTonWalletBtn").addEventListener("click", () => copyTonWallet().catch((error) => showToast(error.message)));
   $("logToggleBtn").addEventListener("click", () => toggleLog(true));
   $("logCloseBtn").addEventListener("click", () => toggleLog(false));
   $("saveIsolationBtn").addEventListener("click", () => saveIsolation().catch((error) => {

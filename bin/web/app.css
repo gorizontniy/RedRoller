@@ -93,6 +93,33 @@ legend,
   line-height: 1;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.support-link {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 6px solid var(--outline);
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+  box-shadow: 4px 4px 0 var(--outline);
+  padding: 0 16px;
+  font-weight: 900;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.support-link:hover {
+  background: var(--surface-container-high);
+}
+
 .icon-btn,
 .square-btn {
   min-width: 48px;
@@ -106,6 +133,7 @@ legend,
 
 .icon-btn:active,
 .square-btn:active,
+.support-link:active,
 .primary-btn:active,
 .secondary-btn:active,
 .spin-btn:active,
@@ -511,6 +539,77 @@ select:focus {
   color: var(--on-surface-variant);
 }
 
+.support-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: center;
+  margin: 20px 0 16px;
+}
+
+.donation-button {
+  min-height: 136px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 8px solid var(--outline);
+  box-shadow: 10px 10px 0 var(--outline);
+  padding: 24px;
+  color: var(--on-primary);
+  font-weight: 900;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.donation-button span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.donation-button small {
+  font-size: 12px;
+  letter-spacing: 0.22em;
+}
+
+.donation-alerts-button {
+  background: #ff5a1f;
+}
+
+.ton-button {
+  background: #0098ea;
+}
+
+.donation-button:hover {
+  filter: brightness(1.06);
+}
+
+.donation-button:active {
+  transform: translate(8px, 8px);
+  box-shadow: none;
+}
+
+.copy-link-btn {
+  min-height: 42px;
+  border: 4px solid var(--outline);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  box-shadow: 4px 4px 0 var(--outline);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.wallet-line,
+.wallet-line code {
+  overflow-wrap: anywhere;
+}
+
 code {
   border: 2px solid var(--outline);
   background: var(--surface-container-highest);
@@ -895,7 +994,8 @@ th {
 
   .tabbar,
   .mode-cards,
-  .project-mode-field {
+  .project-mode-field,
+  .support-actions {
     grid-template-columns: 1fr;
   }
 }
