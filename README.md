@@ -48,6 +48,12 @@ TON: `UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z`
 
 ---
 
+## Благодарности
+
+Отдельное спасибо Telegram-каналу [Whitelist RKN](https://t.me/whitelistRKN) за поддержку и внимание к проекту.
+
+---
+
 ## ✦ Идея
 
 **Redroller** превращает ручную охоту за нужным IPv4 в управляемое локальное приложение.
@@ -131,17 +137,102 @@ RedRoller/
 
 ---
 
-## 📋 Требования
+## 📋 Требования и запасной запуск
 
-| Компонент | Версия | Зачем |
+### Готовый `.exe`
+
+Готовый `Redroller.exe` со страницы [**Releases**](https://github.com/gorizontniy/RedRoller/releases) должен запускаться без установленного Python, pip, PyInstaller и Yandex Cloud CLI: веб-панель, движок ротации, `PyJWT` и `cryptography` упакованы внутрь приложения.
+
+Для обычного запуска нужно подготовить только окружение:
+
+| Что | Зачем | Ссылка |
 |---|---|---|
-| **Python** | 3.9+ | движок, веб-панель, все скрипты |
-| **PyJWT** | любая | подпись JWT для получения IAM-токена |
-| **cryptography** | любая | Fernet-шифрование ключей + PS256 для PyJWT |
-| **Git** | любая | клонирование репозитория (если запускать из исходников) |
-| **PyInstaller** | любая | только для сборки `.exe` (необязательно) |
+| Windows 10/11 | основная поддерживаемая платформа | [Microsoft Windows](https://www.microsoft.com/windows) |
+| Microsoft Edge или Google Chrome | Redroller открывает локальную панель в app-окне браузера; если Edge/Chrome не найден, откроется браузер по умолчанию | [Edge](https://www.microsoft.com/edge/download), [Chrome](https://www.google.com/chrome/) |
+| Yandex Cloud аккаунт с платёжным аккаунтом | Redroller создаёт временные cloud/folder и резервирует публичные IPv4 | [Yandex Cloud Console](https://console.yandex.cloud/) |
+| JSON-ключ сервисного аккаунта | по нему Redroller получает IAM token и работает с Yandex Cloud API | [документация по authorized keys](https://yandex.cloud/en/docs/iam/operations/authentication/manage-authorized-keys) |
+| Права сервисного аккаунта | нужны для cloud/folder, billing binding, VPC и reserved address операций | [справочник ролей Yandex Cloud](https://yandex.cloud/en/docs/iam/roles-reference) |
+| Telegram bot token, опционально | только если нужны уведомления в Telegram | [BotFather](https://t.me/BotFather) |
 
-> Если вы используете готовый `Redroller.exe`, Python нужен для серверной части: `.exe` сам найдёт установленный Python на машине и запустит веб-панель через него.
+Yandex Cloud CLI для обычной работы не требуется: приложение ходит в API напрямую.
+
+Если `.exe` не стартует, проверьте, что Windows не заблокировал скачанный файл: **Свойства файла → Разблокировать**. Логи запуска лежат в:
+
+```text
+%LOCALAPPDATA%\Redroller\.web-runtime
+```
+
+### Запасной способ: запуск из GitHub
+
+Если готовый `.exe` не работает на конкретной машине, можно запустить Redroller из исходников.
+
+**1. Установить инструменты**
+
+| Что | Зачем | Ссылка |
+|---|---|---|
+| Python 3.9+ | запуск web-панели, движка и тестов | [Python for Windows](https://www.python.org/downloads/windows/) |
+| Git for Windows | клонирование репозитория и обновления | [git-scm.com/download/win](https://git-scm.com/download/win) |
+| PowerShell | запуск команд и сборочного скрипта | [документация PowerShell](https://learn.microsoft.com/powershell/) |
+
+**2. Скачать проект**
+
+```powershell
+git clone https://github.com/gorizontniy/RedRoller.git
+cd RedRoller
+```
+
+**3. Поставить Python-зависимости**
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r .\bin\requirements.txt
+```
+
+Если PowerShell блокирует активацию `.venv`, для текущего окна можно выполнить:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Сейчас в `requirements.txt` нужны:
+
+```text
+PyJWT
+cryptography
+```
+
+**4. Запустить приложение**
+
+```powershell
+python .\bin\web_panel_launcher.py
+```
+
+Запасной запуск без desktop-окна:
+
+```powershell
+python .\bin\web_panel.py --host 127.0.0.1 --port 8787
+```
+
+После этого откройте `http://127.0.0.1:8787`.
+
+### Скрипты и сборка
+
+| Скрипт | Для чего |
+|---|---|
+| `.\bin\web_panel.py` | локальная web-панель |
+| `.\bin\web_panel_launcher.py` | desktop-лаунчер панели |
+| `.\bin\yc_ip_hunter.py` | CLI-движок ротации IPv4 |
+| `.\bin\telegram_bot.py` | отдельный Telegram-control bot |
+| `.\bin\build_web_panel_exe.ps1` | сборка `Redroller.exe` через PyInstaller |
+
+Для сборки `.exe` из исходников дополнительно нужен PyInstaller:
+
+```powershell
+python -m pip install pyinstaller
+.\bin\build_web_panel_exe.ps1
+```
 
 ---
 

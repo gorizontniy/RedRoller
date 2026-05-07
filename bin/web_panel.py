@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -50,6 +51,39 @@ class WebPanelError(RuntimeError):
 
 class WebPanelNotFound(WebPanelError):
     pass
+
+
+class WebPanelForbidden(WebPanelError):
+    pass
+
+
+CSRF_HEADER = "X-Redroller-CSRF"
+TELEGRAM_TOKEN_ENV = "REDROLLER_TELEGRAM_BOT_TOKEN"
+
+
+def restrict_file_to_current_user(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return
+    username = os.getenv("USERNAME")
+    if not username:
+        return
+    domain = os.getenv("USERDOMAIN")
+    principal = f"{domain}\\{username}" if domain else username
+    if getattr(subprocess.Popen, "__module__", "subprocess") != "subprocess":
+        return
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{principal}:F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
 
 
 def load_yc_ip_hunter_module() -> Any:
@@ -288,13 +322,11 @@ def load_or_create_fernet(runtime_dir: Path) -> Fernet:
     key_path = runtime_dir / "secret.key"
     if key_path.exists():
         key = key_path.read_bytes().strip()
+        restrict_file_to_current_user(key_path)
     else:
         key = Fernet.generate_key()
         key_path.write_bytes(key + b"\n")
-        try:
-            key_path.chmod(0o600)
-        except OSError:
-            pass
+        restrict_file_to_current_user(key_path)
     return Fernet(key)
 
 
@@ -400,12 +432,18 @@ class WebPanelApp:
         db_path: Optional[Path] = None,
         web_dir: Optional[Path] = None,
         python: Optional[str] = None,
+        runner_command: Optional[List[str]] = None,
     ) -> None:
         self.root = root.resolve()
         self.runtime_dir = (runtime_dir or self.root / ".web-runtime").resolve()
         self.db_path = (db_path or self.runtime_dir / DEFAULT_DB_NAME).resolve()
         self.web_dir = (web_dir or self.root / "web").resolve()
         self.python = python or sys.executable
+        self.runner_command = list(runner_command) if runner_command is not None else [
+            self.python,
+            str(self.root / "yc_ip_hunter.py"),
+        ]
+        self.csrf_token = secrets.token_urlsafe(32)
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.fernet = load_or_create_fernet(self.runtime_dir)
         self._lock = threading.Lock()
@@ -836,15 +874,32 @@ class WebPanelApp:
             "recreate": base / ".ip-hunter.recreate",
         }
 
+    def write_service_account_key_file(self, account_id: int, encrypted_key: bytes) -> Path:
+        paths = self.runtime_paths(account_id)
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        paths["key"].write_text(
+            self.decrypt_service_account(encrypted_key),
+            encoding="utf-8",
+        )
+        restrict_file_to_current_user(paths["key"])
+        return paths["key"]
+
+    def runner_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env.pop(TELEGRAM_TOKEN_ENV, None)
+        telegram = self.telegram_settings(include_token=True)
+        if bool(telegram["enabled"]):
+            token = str(telegram.get("bot_token") or "").strip()
+            if token:
+                env[TELEGRAM_TOKEN_ENV] = token
+        return env
+
     def build_runtime_files(self, account_id: int) -> Dict[str, Path]:
         with self.connect() as conn:
             row = self.require_account(conn, account_id)
         paths = self.runtime_paths(account_id)
         paths["base"].mkdir(parents=True, exist_ok=True)
-        paths["key"].write_text(
-            self.decrypt_service_account(row["service_account_json_encrypted"]),
-            encoding="utf-8",
-        )
+        self.write_service_account_key_file(account_id, row["service_account_json_encrypted"])
         template = read_json(self.root / "config.example.json")
         target_cidrs = json.loads(row["target_cidrs_json"] or "[]")
         target_ips = json.loads(row["target_ips_json"] or "[]")
@@ -887,7 +942,7 @@ class WebPanelApp:
                     "enabled": bool(telegram["enabled"]),
                     "telegram": {
                         "enabled": bool(telegram["enabled"]),
-                        "bot_token": str(telegram.get("bot_token") or ""),
+                        "bot_token_env": TELEGRAM_TOKEN_ENV,
                         "chat_id": str(telegram.get("chat_id") or ""),
                     },
                 },
@@ -938,6 +993,7 @@ class WebPanelApp:
         self._processes.pop(int(run["id"]), None)
         safe_unlink(Path(str(run["stop_file"])))
         safe_unlink(Path(str(run["recreate_file"])))
+        safe_unlink(self.runtime_paths(int(run["account_id"]))["key"])
 
     def start_spin(self, account_id: int) -> Dict[str, Any]:
         active_run = self.latest_run(account_id, only_active=True)
@@ -948,8 +1004,7 @@ class WebPanelApp:
             if not safe_unlink(control_path) and control_path.exists():
                 raise WebPanelError(f"Не удалось очистить старый control-file: {control_path}")
         command = [
-            self.python,
-            str(self.root / "yc_ip_hunter.py"),
+            *self.runner_command,
             "--config",
             str(paths["config"]),
             "--run",
@@ -989,6 +1044,7 @@ class WebPanelApp:
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
+                env=self.runner_env(),
             )
         self._processes[run_id] = process
         with self.connect() as conn:
@@ -1050,9 +1106,9 @@ class WebPanelApp:
         yc = load_yc_ip_hunter_module()
         paths = self.runtime_paths(account_id)
         paths["base"].mkdir(parents=True, exist_ok=True)
-        paths["key"].write_text(
-            self.decrypt_service_account(account["service_account_json_encrypted"]),
-            encoding="utf-8",
+        cleanup_key_path = self.write_service_account_key_file(
+            account_id,
+            account["service_account_json_encrypted"],
         )
         cleanup_config = {
             "auth": {
@@ -1060,18 +1116,23 @@ class WebPanelApp:
                 "iam_token_env": "YC_IAM_TOKEN",
             }
         }
-        client = yc.YandexCloudClient(
-            yc.TokenProvider(cleanup_config, paths["base"]),
-            dry_run=False,
-            operation_timeout_seconds=180,
-            operation_poll_seconds=1.0,
-        )
+        try:
+            client = yc.YandexCloudClient(
+                yc.TokenProvider(cleanup_config, paths["base"]),
+                dry_run=False,
+                operation_timeout_seconds=180,
+                operation_poll_seconds=1.0,
+            )
+        except Exception:
+            safe_unlink(cleanup_key_path)
+            raise
 
         def is_expected_cleanup_error(exc: Any) -> bool:
             text = exc.text().lower()
             return exc.status == 404 or "not found" in text or "deleted" in text or "deletion" in text
 
         def mark_cleanup_failed(exc: Exception) -> None:
+            safe_unlink(cleanup_key_path)
             with self.connect() as conn:
                 conn.execute(
                     "UPDATE attempts SET cleanup_status=?, cleanup_at=?, cleanup_error=? WHERE id=?",
@@ -1100,14 +1161,19 @@ class WebPanelApp:
             "error": str(attempt.get("cloud_cleanup_error") or ""),
         }
         if not already_cleaned_cloud:
-            cloud_cleanup_result = self.cleanup_disposable_cloud_if_empty(
-                yc=yc,
-                client=client,
-                cloud_id=cloud_id,
-                deleted_folder_id=folder_id,
-                delete_result_folder=delete_result_folder,
-                configured_project_cloud_id=configured_project_cloud_id,
-            )
+            try:
+                cloud_cleanup_result = self.cleanup_disposable_cloud_if_empty(
+                    yc=yc,
+                    client=client,
+                    cloud_id=cloud_id,
+                    deleted_folder_id=folder_id,
+                    delete_result_folder=delete_result_folder,
+                    configured_project_cloud_id=configured_project_cloud_id,
+                )
+            except Exception:
+                safe_unlink(cleanup_key_path)
+                raise
+        safe_unlink(cleanup_key_path)
 
         with self._lock, self.connect() as conn:
             row = self.require_account(conn, account_id)
@@ -1448,17 +1514,29 @@ class WebPanelHandler(BaseHTTPRequestHandler):
     server: "WebPanelServer"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        if sys.stderr is None:
+            return
+        try:
+            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        except Exception:
+            return
 
     @property
     def app(self) -> WebPanelApp:
         return self.server.app
+
+    def require_csrf(self) -> None:
+        token = self.headers.get(CSRF_HEADER, "")
+        if not secrets.compare_digest(token, self.app.csrf_token):
+            raise WebPanelForbidden("CSRF-токен отсутствует или устарел. Обновите страницу Redroller.")
 
     def send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1479,6 +1557,8 @@ class WebPanelHandler(BaseHTTPRequestHandler):
     def handle_error(self, exc: Exception) -> None:
         if isinstance(exc, WebPanelNotFound):
             status = 404
+        elif isinstance(exc, WebPanelForbidden):
+            status = 403
         else:
             status = 400 if isinstance(exc, (WebPanelError, json.JSONDecodeError)) else 500
         self.send_json({"ok": False, "error": str(exc)}, status=status)
@@ -1491,6 +1571,8 @@ class WebPanelHandler(BaseHTTPRequestHandler):
                 self.send_json({"accounts": self.app.list_accounts()})
             elif path == "/api/settings/telegram":
                 self.send_json({"telegram": self.app.public_telegram_settings()})
+            elif path == "/api/session":
+                self.send_json({"csrf_token": self.app.csrf_token})
             elif path == "/api/status":
                 self.send_json(self.app.status_payload())
             elif path == "/api/events":
@@ -1503,6 +1585,7 @@ class WebPanelHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             path = urllib.parse.urlparse(self.path).path
+            self.require_csrf()
             if path == "/api/accounts":
                 self.send_json({"account": self.app.create_account(self.read_json_body())}, status=201)
                 return
@@ -1538,6 +1621,7 @@ class WebPanelHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         try:
             path = urllib.parse.urlparse(self.path).path
+            self.require_csrf()
             isolation_match = re.fullmatch(r"/api/accounts/(\d+)/isolation", path)
             if isolation_match:
                 self.send_json(self.app.update_account_isolation(int(isolation_match.group(1)), self.read_json_body()))
@@ -1560,6 +1644,7 @@ class WebPanelHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         try:
             path = urllib.parse.urlparse(self.path).path
+            self.require_csrf()
             match = re.fullmatch(r"/api/accounts/(\d+)", path)
             if not match:
                 self.send_json({"ok": False, "error": "Не найдено."}, status=404)
@@ -1601,6 +1686,7 @@ class WebPanelHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1624,7 +1710,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     runtime_dir = Path(args.runtime_dir).resolve()
     db_path = Path(args.db).resolve() if args.db else runtime_dir / DEFAULT_DB_NAME
-    app = WebPanelApp(runtime_dir=runtime_dir, db_path=db_path)
+    runner_command = None
+    runner_command_json = os.getenv("REDROLLER_HUNTER_COMMAND_JSON", "")
+    if runner_command_json:
+        try:
+            parsed_runner_command = json.loads(runner_command_json)
+        except json.JSONDecodeError:
+            print("REDROLLER_HUNTER_COMMAND_JSON is not valid JSON.", file=sys.stderr)
+            return 2
+        if not (
+            isinstance(parsed_runner_command, list)
+            and parsed_runner_command
+            and all(isinstance(item, str) and item for item in parsed_runner_command)
+        ):
+            print("REDROLLER_HUNTER_COMMAND_JSON must be a non-empty JSON array of strings.", file=sys.stderr)
+            return 2
+        runner_command = parsed_runner_command
+    app = WebPanelApp(runtime_dir=runtime_dir, db_path=db_path, runner_command=runner_command)
     server = WebPanelServer((args.host, args.port), app)
     print(f"Redroller web panel: http://{args.host}:{args.port}")
     try:

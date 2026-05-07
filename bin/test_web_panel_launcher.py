@@ -1,5 +1,6 @@
 import importlib.util
 import base64
+import json
 import re
 import tempfile
 import sys
@@ -100,6 +101,49 @@ class WebPanelLauncherTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         terminate.assert_called_once_with(panel_process)
+
+    def test_frozen_start_panel_uses_bundled_children(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            exe_path = r"C:\apps\Redroller.exe"
+            process = FakeProcess()
+
+            with mock.patch.object(launcher.sys, "frozen", True, create=True), \
+                mock.patch.object(launcher.sys, "executable", exe_path), \
+                mock.patch.object(launcher.subprocess, "Popen", return_value=process) as popen:
+                result = launcher.start_panel("127.0.0.1", 8797, runtime_dir)
+
+            self.assertIs(result, process)
+            command = popen.call_args.args[0]
+            self.assertEqual(
+                command,
+                [
+                    exe_path,
+                    launcher.PANEL_CHILD_ARG,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8797",
+                    "--runtime-dir",
+                    str(runtime_dir),
+                ],
+            )
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(
+                json.loads(env[launcher.HUNTER_COMMAND_ENV]),
+                [exe_path, launcher.HUNTER_CHILD_ARG],
+            )
+
+    def test_main_dispatches_hidden_children(self):
+        with mock.patch.object(launcher, "run_panel_child", return_value=11) as panel:
+            code = launcher.main([launcher.PANEL_CHILD_ARG, "--port", "8797"])
+        self.assertEqual(code, 11)
+        panel.assert_called_once_with(["--port", "8797"])
+
+        with mock.patch.object(launcher, "run_hunter_child", return_value=12) as hunter:
+            code = launcher.main([launcher.HUNTER_CHILD_ARG, "--config", "config.json"])
+        self.assertEqual(code, 12)
+        hunter.assert_called_once_with(["--config", "config.json"])
 
     def test_frozen_default_runtime_dir_uses_local_app_data(self):
         with mock.patch.object(launcher.sys, "frozen", True, create=True), \

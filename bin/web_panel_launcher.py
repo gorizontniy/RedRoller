@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import signal
@@ -29,6 +30,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 APP_NAME = "Redroller"
 LEGACY_APP_NAME = "IP_ROTATOR.V1"
+PANEL_CHILD_ARG = "--redroller-panel-child"
+HUNTER_CHILD_ARG = "--redroller-hunter-child"
+HUNTER_COMMAND_ENV = "REDROLLER_HUNTER_COMMAND_JSON"
 
 
 def local_app_data_dir() -> Path:
@@ -98,16 +102,31 @@ def python_command() -> List[str]:
 
 
 def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
-    command = [
-        *python_command(),
-        str(ROOT / "web_panel.py"),
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--runtime-dir",
-        str(runtime_dir),
-    ]
+    if getattr(sys, "frozen", False):
+        command = [
+            str(sys.executable),
+            PANEL_CHILD_ARG,
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--runtime-dir",
+            str(runtime_dir),
+        ]
+        env = os.environ.copy()
+        env[HUNTER_COMMAND_ENV] = json.dumps([str(sys.executable), HUNTER_CHILD_ARG])
+    else:
+        command = [
+            *python_command(),
+            str(ROOT / "web_panel.py"),
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--runtime-dir",
+            str(runtime_dir),
+        ]
+        env = None
     creationflags = 0
     if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -124,6 +143,7 @@ def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
             stderr=err_handle,
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
+            env=env,
         )
     finally:
         out_handle.close()
@@ -229,7 +249,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_panel_child(argv: List[str]) -> int:
+    import web_panel
+
+    return web_panel.main(argv)
+
+
+def run_hunter_child(argv: List[str]) -> int:
+    import yc_ip_hunter
+
+    return yc_ip_hunter.main(argv)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == [PANEL_CHILD_ARG]:
+        return run_panel_child(argv[1:])
+    if argv[:1] == [HUNTER_CHILD_ARG]:
+        return run_hunter_child(argv[1:])
     args = parse_args(argv)
     return run_launcher(args.host, int(args.port), Path(args.runtime_dir).resolve())
 

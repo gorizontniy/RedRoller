@@ -323,6 +323,39 @@ class TelegramApiTests(unittest.TestCase):
 
 
 class ControlBotTests(unittest.TestCase):
+    def test_allow_any_chat_requires_explicit_acknowledgement(self):
+        root = fresh_test_dir("bot-allow-any-chat")
+        try:
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            config_path = root / "telegram.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bot_token": "123:token",
+                        "allow_any_chat": True,
+                        "accounts": [
+                            {
+                                "name": "Main",
+                                "workdir": str(root),
+                                "config": "config.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(bot.BotConfigError, "allow_any_chat=true"):
+                bot.ControlBot(config_path)
+
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["allow_any_chat_acknowledged"] = True
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            control = bot.ControlBot(config_path)
+            self.assertTrue(control.is_allowed("any-chat"))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_initial_offset_drops_pending_updates_once(self):
         root = fresh_test_dir("bot-offset")
         try:
