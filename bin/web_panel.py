@@ -59,6 +59,7 @@ class WebPanelForbidden(WebPanelError):
 
 CSRF_HEADER = "X-Redroller-CSRF"
 TELEGRAM_TOKEN_ENV = "REDROLLER_TELEGRAM_BOT_TOKEN"
+USER_CONFIG_ENV = "REDROLLER_USER_CONFIG_JSON"
 
 
 def restrict_file_to_current_user(path: Path) -> None:
@@ -247,6 +248,15 @@ def read_json(path: Path) -> Dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def resolve_config_relative_path(config_path: Path, value: Any) -> Optional[Path]:
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    return path.resolve()
 
 
 def read_tail(path: Path, limit: int = 80) -> List[str]:
@@ -451,6 +461,7 @@ class WebPanelApp:
         self.backup_database_if_needed()
         with self.connect() as conn:
             init_db(conn)
+        self.import_user_config_if_needed()
 
     def backup_database_if_needed(self) -> None:
         if not self.db_path.exists():
@@ -514,6 +525,99 @@ class WebPanelApp:
                     (key, value),
                 )
             conn.commit()
+
+    def user_config_path(self) -> Optional[Path]:
+        candidates = []
+        env_path = os.getenv(USER_CONFIG_ENV)
+        if env_path:
+            candidates.append(Path(env_path))
+        candidates.append(self.root / "config.json")
+        example_path = (self.root / "config.example.json").resolve()
+        for candidate in candidates:
+            try:
+                path = candidate.expanduser().resolve()
+            except OSError:
+                continue
+            if path == example_path:
+                continue
+            if path.is_file():
+                return path
+        return None
+
+    def runtime_config_template(self) -> Dict[str, Any]:
+        user_config_path = self.user_config_path()
+        if user_config_path is not None:
+            template = read_json(user_config_path)
+            if template:
+                return template
+        return read_json(self.root / "config.example.json")
+
+    def import_user_config_if_needed(self) -> None:
+        user_config_path = self.user_config_path()
+        if user_config_path is None:
+            return
+        with self.connect() as conn:
+            if int(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]) > 0:
+                return
+        config = read_json(user_config_path)
+        if not config:
+            return
+        auth = config.get("auth") if isinstance(config.get("auth"), dict) else {}
+        key_path = resolve_config_relative_path(user_config_path, auth.get("service_account_key_file"))
+        if key_path is None or not key_path.exists():
+            return
+        try:
+            service_account_json = key_path.read_text(encoding="utf-8-sig")
+            self.encrypt_service_account(service_account_json)
+        except (OSError, WebPanelError, json.JSONDecodeError):
+            return
+
+        zones = parse_json_list(config.get("zones") or ([config.get("zone")] if config.get("zone") else []))
+        roll_mode = str(config.get("roll_mode") or "cloud").strip().lower()
+        if roll_mode not in ROLL_MODES:
+            roll_mode = "cloud"
+        target_cloud_id = str(config.get("target_cloud_id") or config.get("cloud_id") or "").strip()
+        folder_id = str(config.get("folder_id") or "").strip()
+        if roll_mode == "project" and (not target_cloud_id or not folder_id):
+            roll_mode = "cloud"
+        service_cloud_id = str(config.get("service_cloud_id") or "").strip()
+        if not service_cloud_id:
+            service_cloud_id = target_cloud_id or str(config.get("cloud_id") or "").strip()
+        payload = {
+            "name": str(config.get("name") or user_config_path.stem or "config.json").strip(),
+            "organization_id": str(config.get("organization_id") or "").strip(),
+            "billing_account_id": str(config.get("billing_account_id") or "").strip(),
+            "service_cloud_id": service_cloud_id,
+            "roll_mode": roll_mode,
+            "target_cloud_id": target_cloud_id if roll_mode == "project" else "",
+            "folder_id": folder_id if roll_mode == "project" else "",
+            "zones": zones,
+            "target_cidrs": config.get("target_cidrs") or [],
+            "target_ips": config.get("target_ips") or [],
+            "protected_cloud_ids": config.get("protected_cloud_ids") or [],
+            "protected_folder_ids": config.get("protected_folder_ids") or [],
+            "continue_after_success": config.get("continue_after_success", False),
+            "service_account_json": service_account_json,
+        }
+        try:
+            self.create_account(payload)
+        except WebPanelError:
+            return
+        notifications = config.get("notifications") if isinstance(config.get("notifications"), dict) else {}
+        telegram = notifications.get("telegram") if isinstance(notifications.get("telegram"), dict) else {}
+        token_env = str(telegram.get("bot_token_env") or "TELEGRAM_BOT_TOKEN")
+        token = str(telegram.get("bot_token") or os.getenv(token_env) or "").strip()
+        chat_id = str(telegram.get("chat_id") or "").strip()
+        enabled = bool(notifications.get("enabled") or telegram.get("enabled"))
+        values = {
+            "imported_config_path": str(user_config_path),
+            "telegram_enabled": "true" if enabled else "false",
+            "telegram_chat_id": chat_id,
+            "telegram_updated_at": utc_now(),
+        }
+        if token:
+            values["telegram_bot_token_encrypted"] = self.encrypt_text(token).decode("ascii")
+        self.set_settings(values)
 
     def telegram_settings(self, include_token: bool = False) -> Dict[str, Any]:
         token_encrypted = self.get_setting("telegram_bot_token_encrypted", "")
@@ -579,7 +683,7 @@ class WebPanelApp:
         return {"ok": True}
 
     def default_zones(self) -> List[str]:
-        template = read_json(self.root / "config.example.json")
+        template = self.runtime_config_template()
         zones = template.get("zones") or []
         if not zones and template.get("zone"):
             zones = [template["zone"]]
@@ -900,7 +1004,7 @@ class WebPanelApp:
         paths = self.runtime_paths(account_id)
         paths["base"].mkdir(parents=True, exist_ok=True)
         self.write_service_account_key_file(account_id, row["service_account_json_encrypted"])
-        template = read_json(self.root / "config.example.json")
+        template = self.runtime_config_template()
         target_cidrs = json.loads(row["target_cidrs_json"] or "[]")
         target_ips = json.loads(row["target_ips_json"] or "[]")
         if not target_cidrs and not target_ips:
@@ -1267,7 +1371,7 @@ class WebPanelApp:
                 return {"status": "deleted", "error": ""}
             return {"status": "failed", "error": exc.message}
 
-        template = read_json(self.root / "config.example.json")
+        template = self.runtime_config_template()
         name_prefix = str(template.get("cloud_name_prefix") or "ip-hunter")
         labels = cloud.get("labels") or {}
         name = str(cloud.get("name") or "")

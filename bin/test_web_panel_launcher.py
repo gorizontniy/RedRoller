@@ -145,6 +145,23 @@ class WebPanelLauncherTests(unittest.TestCase):
         self.assertEqual(code, 12)
         hunter.assert_called_once_with(["--config", "config.json"])
 
+    def test_start_panel_passes_user_config_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp) / "app"
+            runtime_dir = Path(tmp) / "runtime"
+            app_dir.mkdir()
+            config_path = app_dir / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            process = FakeProcess()
+
+            with mock.patch.object(launcher, "APP_DIR", app_dir), \
+                mock.patch.object(launcher.subprocess, "Popen", return_value=process) as popen:
+                result = launcher.start_panel("127.0.0.1", 8797, runtime_dir)
+
+            self.assertIs(result, process)
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(env[launcher.USER_CONFIG_ENV], str(config_path))
+
     def test_frozen_default_runtime_dir_uses_local_app_data(self):
         with mock.patch.object(launcher.sys, "frozen", True, create=True), \
             mock.patch.dict(launcher.os.environ, {"LOCALAPPDATA": r"C:\Users\tester\AppData\Local"}):

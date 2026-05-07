@@ -33,6 +33,7 @@ LEGACY_APP_NAME = "IP_ROTATOR.V1"
 PANEL_CHILD_ARG = "--redroller-panel-child"
 HUNTER_CHILD_ARG = "--redroller-hunter-child"
 HUNTER_COMMAND_ENV = "REDROLLER_HUNTER_COMMAND_JSON"
+USER_CONFIG_ENV = "REDROLLER_USER_CONFIG_JSON"
 
 
 def local_app_data_dir() -> Path:
@@ -101,7 +102,32 @@ def python_command() -> List[str]:
     raise RuntimeError("Для запуска серверной части Redroller нужен установленный Python.")
 
 
+def user_config_path() -> Optional[Path]:
+    candidates = [APP_DIR / "config.json", Path.cwd() / "config.json"]
+    seen = set()
+    for candidate in candidates:
+        try:
+            path = candidate.resolve()
+        except OSError:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        if path.is_file():
+            return path
+    return None
+
+
+def panel_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    config_path = user_config_path()
+    if config_path is not None:
+        env[USER_CONFIG_ENV] = str(config_path)
+    return env
+
+
 def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
+    env = panel_environment()
     if getattr(sys, "frozen", False):
         command = [
             str(sys.executable),
@@ -113,7 +139,6 @@ def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
             "--runtime-dir",
             str(runtime_dir),
         ]
-        env = os.environ.copy()
         env[HUNTER_COMMAND_ENV] = json.dumps([str(sys.executable), HUNTER_CHILD_ARG])
     else:
         command = [
@@ -126,7 +151,6 @@ def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
             "--runtime-dir",
             str(runtime_dir),
         ]
-        env = None
     creationflags = 0
     if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
