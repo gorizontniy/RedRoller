@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="assets/redroller-hero.jpg" alt="Redroller banner" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/stafilakok">
+    <img alt="Developer: stafilakok" src="https://img.shields.io/badge/dev-stafilakok-af000c?style=for-the-badge&logo=github&logoColor=white">
+  </a>
+  <a href="https://github.com/gorizontniy">
+    <img alt="Developer: gorizontniy" src="https://img.shields.io/badge/dev-gorizontniy-281715?style=for-the-badge&logo=github&logoColor=white">
+  </a>
+</p>
+
 # 🔴 Redroller — народная рулетка Yandex Cloud
 
 > **Локальное desktop-приложение для охоты за нужным публичным IPv4 в Yandex Cloud.**  
