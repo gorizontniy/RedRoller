@@ -30,3 +30,8 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Local-only agent/project coordination notes.
+AGENTS.md
+docs/AGENT_MAP.md
+docs/ROADMAP.md

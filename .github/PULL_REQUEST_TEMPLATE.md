@@ -36,10 +36,8 @@
 
 Notes:
 
-# Coordination
+# Release checklist
 
-- [ ] `README.md` остаётся пользовательским гайдом; внутренняя кухня вынесена в `docs/` / `AGENTS.md`
-- [ ] `docs/ROADMAP.md` обновлён, если изменился продуктовый scope
-- [ ] `docs/AGENT_MAP.md` обновлён, если изменились границы модулей
+- [ ] `README.md` остаётся понятным пользовательским гайдом
 - [ ] Screenshots приложены для UI changes
 - [ ] Нет локальных configs, logs, DBs, runtime files или secrets в commit
