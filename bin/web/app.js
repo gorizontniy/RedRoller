@@ -3,7 +3,9 @@ const state = {
   status: null,
   editingId: null,
   selectedIsolationAccountId: null,
+  selectedTargetsAccountId: null,
   isolationSaveToken: 0,
+  targetsSaveToken: 0,
   telegram: null,
 };
 
@@ -51,6 +53,18 @@ function selectedRollMode() {
   return checked ? checked.value : "";
 }
 
+function selectedSuccessMode() {
+  const checked = document.querySelector("input[name='successMode']:checked");
+  return checked ? checked.value : "stop";
+}
+
+function setSuccessMode(continueAfterSuccess) {
+  const value = continueAfterSuccess ? "continue" : "stop";
+  document.querySelectorAll("input[name='successMode']").forEach((item) => {
+    item.checked = item.value === value;
+  });
+}
+
 function setRollMode(mode) {
   const value = mode === "project" ? "project" : mode === "cloud" ? "cloud" : "";
   document.querySelectorAll("input[name='rollMode']").forEach((item) => {
@@ -62,7 +76,7 @@ function setRollMode(mode) {
     item.classList.toggle("hidden", !projectMode);
   });
   $("cloudModeNote").classList.toggle("hidden", value !== "cloud");
-  $("modeSummary").textContent = value === "project" ? "крутка 1 проекта" : value === "cloud" ? "крутка облаков" : "режим не выбран";
+  $("modeSummary").textContent = value === "project" ? "крутка 1 проекта" : value === "cloud" ? "гибридная крутка" : "режим не выбран";
   $("targetCloudId").required = projectMode;
   $("folderId").required = projectMode;
   if (!projectMode) {
@@ -87,6 +101,7 @@ function formPayload() {
     zones: selectedZones(),
     target_cidrs: lineList($("targetCidrs").value),
     target_ips: lineList($("targetIps").value),
+    continue_after_success: selectedSuccessMode() === "continue",
     service_account_json: $("serviceAccountJson").value,
   };
 }
@@ -96,6 +111,7 @@ function resetForm() {
   $("accountId").value = "";
   $("accountForm").reset();
   setZones(["ru-central1-a", "ru-central1-e"]);
+  setSuccessMode(false);
   setRollMode("");
   $("serviceAccountJson").required = true;
 }
@@ -113,6 +129,7 @@ function fillForm(account) {
   $("targetCidrs").value = (account.target_cidrs || []).join("\n");
   $("targetIps").value = (account.target_ips || []).join("\n");
   setZones(account.zones || []);
+  setSuccessMode(Boolean(account.continue_after_success));
   $("serviceAccountJson").value = "";
   $("serviceAccountJson").required = false;
   switchTab("accounts");
@@ -121,8 +138,15 @@ function fillForm(account) {
 
 function accountCard(account) {
   const zones = (account.zones || []).join(", ") || "-";
-  const protectedCount = (account.protected_cloud_ids || []).length;
-  const modeLabel = account.roll_mode === "project" ? "1 проект" : "Облака";
+  const protectedCloudCount = (account.protected_cloud_ids || []).length;
+  const protectedFolderCount = (account.protected_folder_ids || []).length;
+  const isolationLabel = [
+    protectedCloudCount ? `${protectedCloudCount} cloud-id` : "",
+    protectedFolderCount ? `${protectedFolderCount} folder-id` : "",
+  ].filter(Boolean).join(", ") || "-";
+  const modeLabel = account.roll_mode === "project" ? "1 проект" : "Гибрид";
+  const projectFolderLabel = account.roll_mode === "project" ? account.folder_masked : "не используется";
+  const successModeLabel = account.continue_after_success ? "собирать дальше" : "остановиться";
   const card = document.createElement("article");
   card.className = `account-card ${account.is_active ? "active" : ""}`;
   card.innerHTML = `
@@ -132,9 +156,10 @@ function accountCard(account) {
       <div class="meta-row"><b>Сервисное облако:</b><span class="chip">${escapeHtml(account.service_cloud_masked)}</span></div>
       <div class="meta-row"><b>Организация:</b><span class="chip">${escapeHtml(account.organization_masked)}</span></div>
       <div class="meta-row"><b>Режим:</b><span class="chip">${escapeHtml(modeLabel)}</span></div>
-      <div class="meta-row"><b>Папка:</b><span class="chip">${escapeHtml(account.folder_masked)}</span></div>
+      <div class="meta-row"><b>Каталог 1 проекта:</b><span class="chip">${escapeHtml(projectFolderLabel)}</span></div>
       <div class="meta-row"><b>Зоны:</b><span class="chip">${escapeHtml(zones)}</span></div>
-      <div class="meta-row"><b>Изоляция:</b><span class="chip">${protectedCount ? `${protectedCount} cloud-id` : "-"}</span></div>
+      <div class="meta-row"><b>После успеха:</b><span class="chip">${escapeHtml(successModeLabel)}</span></div>
+      <div class="meta-row"><b>Изоляция:</b><span class="chip">${escapeHtml(isolationLabel)}</span></div>
     </div>
     <div class="card-actions">
       <button class="secondary-btn edit-btn">Изменить</button>
@@ -162,6 +187,7 @@ function renderAccounts() {
   }
   state.accounts.forEach((account) => list.appendChild(accountCard(account)));
   renderIsolationAccountSelect();
+  renderTargetsAccountSelect();
 }
 
 function reelState(status) {
@@ -203,18 +229,56 @@ function renderAttempts(status) {
   const attempts = status.attempts || [];
   body.innerHTML = "";
   if (!attempts.length) {
-    body.innerHTML = "<tr><td colspan='5'>История пока пуста.</td></tr>";
+    body.innerHTML = "<tr><td colspan='7'>История пока пуста.</td></tr>";
     return;
   }
   attempts.slice().reverse().forEach((attempt) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${attempt.attempt_number || "-"}</td>
-      <td>${escapeHtml((attempt.at || "").slice(11, 19) || "-")}</td>
-      <td>${escapeHtml(attempt.ip || "-")}</td>
-      <td>${escapeHtml(attempt.zone || "-")}</td>
-      <td><span class="status-pill ${attempt.matched ? "success" : "failure"}">${attempt.matched ? "УСПЕХ" : "МИМО"}</span></td>
+    const folderUrl = yandexFolderUrl(attempt.folder_id);
+    const statusHtml = attempt.matched && folderUrl
+      ? `<a class="status-pill success link-pill" href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer noopener" title="Открыть каталог в Yandex Cloud">УСПЕХ</a>`
+      : `<span class="status-pill ${attempt.matched ? "success" : "failure"}">${attempt.matched ? "УСПЕХ" : "МИМО"}</span>`;
+    const resourceHtml = folderUrl
+      ? `<a class="resource-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer noopener" title="Открыть каталог ${escapeHtml(attempt.folder_id || "")} в Yandex Cloud">YC</a>`
+      : `<span class="resource-link disabled">YC</span>`;
+    const repeat = Boolean(attempt.ip_seen_before);
+    const repeatFlag = repeat
+      ? `<span class="ip-flag repeat" title="Этот IP уже выпадал в истории аккаунта">ПОВТОР</span>`
+      : "";
+    const ipHtml = `
+      <span class="ip-cell">
+        <span class="ip-address">${escapeHtml(attempt.ip || "-")}</span>
+        ${repeatFlag}
+      </span>
     `;
+    const cleanupStatus = String(attempt.cleanup_status || "");
+    const cloudCleanupStatus = String(attempt.cloud_cleanup_status || "");
+    const canCleanup = Boolean(attempt.matched) && cleanupStatus !== "deleted";
+    const canCleanupCloud = Boolean(attempt.matched)
+      && cleanupStatus === "deleted"
+      && !["deleted", "kept_project_cloud", "skipped_not_managed"].includes(cloudCleanupStatus);
+    const cleanupHtml = cleanupStatus === "deleted"
+      ? cloudCleanupStatus === "deleted"
+        ? `<span class="cleanup-state done">удалено</span>`
+        : canCleanupCloud
+          ? `<button type="button" class="cleanup-btn" ${status.running ? "disabled" : ""} title="Попробовать удалить пустое disposable-cloud">Удалить cloud</button>`
+          : `<span class="cleanup-state done">IP удалён</span>`
+      : canCleanup
+        ? `<button type="button" class="cleanup-btn" ${status.running ? "disabled" : ""} title="Удалить address, убрать результат из изоляции и удалить disposable-каталог/cloud">Удалить IP</button>`
+        : `<span class="cleanup-state muted">-</span>`;
+    tr.innerHTML = `
+      <td>${attempt.display_number || attempt.attempt_number || "-"}</td>
+      <td>${escapeHtml((attempt.at || "").slice(11, 19) || "-")}</td>
+      <td>${ipHtml}</td>
+      <td>${escapeHtml(attempt.zone || "-")}</td>
+      <td>${statusHtml}</td>
+      <td>${resourceHtml}</td>
+      <td>${cleanupHtml}</td>
+    `;
+    const cleanupButton = tr.querySelector(".cleanup-btn");
+    if (cleanupButton) {
+      cleanupButton.addEventListener("click", () => cleanupAttempt(status.active_account, attempt).catch((error) => showToast(error.message)));
+    }
     body.appendChild(tr);
   });
 }
@@ -222,7 +286,7 @@ function renderAttempts(status) {
 function renderStatus(status) {
   state.status = status;
   $("currentIp").textContent = status.current_ip || "-";
-  $("targetSubnet").textContent = status.target_subnet || "-";
+  $("targetSubnet").textContent = status.target_summary || status.target_subnet || "-";
   $("reelError").textContent = status.error || "";
   $("reelError").classList.toggle("hidden", !status.error);
   $("spinBtn").disabled = !status.active_account || status.running;
@@ -238,6 +302,7 @@ async function loadAccounts() {
   state.accounts = data.accounts || [];
   renderAccounts();
   ensureIsolationSelection();
+  ensureTargetsSelection();
 }
 
 async function loadStatus() {
@@ -300,6 +365,29 @@ async function deleteAccount(id) {
   await refreshAll();
 }
 
+async function cleanupAttempt(account, attempt) {
+  if (!account || !attempt) return;
+  const cloudOnly = String(attempt.cleanup_status || "") === "deleted";
+  const message = [
+    cloudOnly ? `Удалить cloud результата ${attempt.ip}?` : `Удалить IP ${attempt.ip}?`,
+    "",
+    cloudOnly
+      ? "Redroller проверит, что cloud пустое и управляется Redroller, затем отправит его на удаление."
+      : "Redroller удалит reserved address и снимет cloud/folder с изоляции.",
+    cloudOnly
+      ? "Если в cloud есть активные каталоги, оно останется на месте."
+      : "Disposable-каталог и пустое disposable-cloud будут отправлены на удаление; каталог режима 1 проекта останется.",
+    "Это действие нельзя отменить.",
+  ].join("\n");
+  if (!confirm(message)) return;
+  const data = await api(`/api/accounts/${account.id}/attempts/${attempt.id}/cleanup`, {
+    method: "POST",
+    body: "{}",
+  });
+  showToast(data.message || "Результат удалён");
+  await refreshAll();
+}
+
 async function saveAccount(event) {
   event.preventDefault();
   const payload = formPayload();
@@ -318,6 +406,10 @@ function activeOrFirstAccount() {
 
 function selectedIsolationAccount() {
   return state.accounts.find((account) => String(account.id) === String(state.selectedIsolationAccountId)) || null;
+}
+
+function selectedTargetsAccount() {
+  return state.accounts.find((account) => String(account.id) === String(state.selectedTargetsAccountId)) || null;
 }
 
 function renderIsolationAccountSelect() {
@@ -353,6 +445,7 @@ function ensureIsolationSelection() {
 function loadIsolationFieldFromSelection() {
   const account = selectedIsolationAccount();
   $("protectedCloudIds").value = account ? (account.protected_cloud_ids || []).join("\n") : "";
+  $("protectedFolderIds").value = account ? (account.protected_folder_ids || []).join("\n") : "";
   $("saveIsolationBtn").disabled = !account;
 }
 
@@ -367,6 +460,7 @@ async function saveIsolation() {
   $("saveIsolationBtn").disabled = true;
   const isolationPayload = {};
   isolationPayload["protected_cloud_ids"] = lineList($("protectedCloudIds").value);
+  isolationPayload["protected_folder_ids"] = lineList($("protectedFolderIds").value);
   const data = await api(`/api/accounts/${accountId}/isolation`, {
     method: "PUT",
     body: JSON.stringify(isolationPayload),
@@ -376,6 +470,66 @@ async function saveIsolation() {
     loadIsolationFieldFromSelection();
   }
   showToast(`Изоляция сохранена для ${data.account.name}`);
+}
+
+function renderTargetsAccountSelect() {
+  const select = $("targetsAccountSelect");
+  const previous = state.selectedTargetsAccountId;
+  select.innerHTML = "";
+  if (!state.accounts.length) {
+    select.innerHTML = "<option value=''>Нет аккаунтов</option>";
+    state.selectedTargetsAccountId = null;
+    $("saveTargetsBtn").disabled = true;
+    return;
+  }
+  state.accounts.forEach((account) => {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.is_active ? `${account.name} (активен)` : account.name;
+    select.appendChild(option);
+  });
+  const fallback = activeOrFirstAccount();
+  const selected = state.accounts.some((account) => String(account.id) === String(previous))
+    ? previous
+    : fallback.id;
+  state.selectedTargetsAccountId = selected;
+  select.value = selected;
+  $("saveTargetsBtn").disabled = false;
+}
+
+function ensureTargetsSelection() {
+  renderTargetsAccountSelect();
+  loadTargetsFieldFromSelection();
+}
+
+function loadTargetsFieldFromSelection() {
+  const account = selectedTargetsAccount();
+  $("targetEditorCidrs").value = account ? (account.target_cidrs || []).join("\n") : "";
+  $("targetEditorIps").value = account ? (account.target_ips || []).join("\n") : "";
+  $("saveTargetsBtn").disabled = !account;
+}
+
+async function saveTargets() {
+  const accountId = state.selectedTargetsAccountId;
+  const account = selectedTargetsAccount();
+  if (!accountId || !account) {
+    showToast("Выберите аккаунт для целей");
+    return;
+  }
+  const token = ++state.targetsSaveToken;
+  $("saveTargetsBtn").disabled = true;
+  const data = await api(`/api/accounts/${accountId}/targets`, {
+    method: "PUT",
+    body: JSON.stringify({
+      target_cidrs: lineList($("targetEditorCidrs").value),
+      target_ips: lineList($("targetEditorIps").value),
+    }),
+  });
+  await refreshAll();
+  if (token === state.targetsSaveToken && String(state.selectedTargetsAccountId) === String(accountId)) {
+    loadTargetsFieldFromSelection();
+  }
+  showToast(`Цели сохранены для ${data.account.name}`);
 }
 
 async function spin() {
@@ -426,6 +580,11 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function yandexFolderUrl(folderId) {
+  const value = String(folderId || "").trim();
+  return value ? `https://console.yandex.cloud/folders/${encodeURIComponent(value)}/dashboard` : "";
+}
+
 function attachEvents() {
   $("accountForm").addEventListener("submit", (event) => saveAccount(event).catch((error) => showToast(error.message)));
   $("telegramForm").addEventListener("submit", (event) => saveTelegramSettings(event).catch((error) => showToast(error.message)));
@@ -448,10 +607,19 @@ function attachEvents() {
     $("saveIsolationBtn").disabled = !selectedIsolationAccount();
     showToast(error.message);
   }));
+  $("saveTargetsBtn").addEventListener("click", () => saveTargets().catch((error) => {
+    $("saveTargetsBtn").disabled = !selectedTargetsAccount();
+    showToast(error.message);
+  }));
   $("isolationAccountSelect").addEventListener("change", (event) => {
     state.selectedIsolationAccountId = event.target.value || null;
     state.isolationSaveToken += 1;
     loadIsolationFieldFromSelection();
+  });
+  $("targetsAccountSelect").addEventListener("change", (event) => {
+    state.selectedTargetsAccountId = event.target.value || null;
+    state.targetsSaveToken += 1;
+    loadTargetsFieldFromSelection();
   });
   document.querySelectorAll(".tab-btn").forEach((button) => {
     button.addEventListener("click", () => switchTab(button.dataset.tab));

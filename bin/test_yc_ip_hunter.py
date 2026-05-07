@@ -143,6 +143,36 @@ class NameTests(unittest.TestCase):
     def test_delete_folder_supports_non_waiting_mode(self):
         self.assertIn("def delete_folder(", MODULE_PATH.read_text(encoding="utf-8"))
 
+    def test_list_folders_pages_by_cloud_id(self):
+        class FakeTokenProvider:
+            def get(self):
+                return "token"
+
+        client = yc.YandexCloudClient(
+            FakeTokenProvider(),
+            dry_run=False,
+            operation_timeout_seconds=1,
+            operation_poll_seconds=0,
+        )
+        urls = []
+
+        def fake_request(method, url, body=None, operation_hint="operation"):
+            urls.append(url)
+            self.assertEqual(method, "GET")
+            self.assertIsNone(body)
+            self.assertEqual(operation_hint, "folder-list")
+            if "pageToken=next" in url:
+                return {"folders": [{"id": "folder-2"}]}
+            return {"folders": [{"id": "folder-1"}], "nextPageToken": "next"}
+
+        client.request = fake_request
+
+        folders = client.list_folders("cloud-1")
+
+        self.assertEqual([folder["id"] for folder in folders], ["folder-1", "folder-2"])
+        self.assertIn("cloudId=cloud-1", urls[0])
+        self.assertIn("pageToken=next", urls[1])
+
 
 class IterationTests(unittest.TestCase):
     def test_zero_max_iterations_means_unbounded(self):
@@ -322,12 +352,21 @@ class IterationTests(unittest.TestCase):
 
     def test_hybrid_never_deletes_service_cloud(self):
         hunter = object.__new__(yc.IpHunter)
-        hunter.config = {"service_cloud_id": "service-cloud", "protected_cloud_ids": ["protected-cloud"]}
-        hunter.state = {"auto_protected_cloud_ids": ["auto-protected-cloud"]}
+        hunter.config = {
+            "service_cloud_id": "service-cloud",
+            "protected_cloud_ids": ["protected-cloud"],
+            "protected_folder_ids": ["protected-folder"],
+        }
+        hunter.state = {
+            "auto_protected_cloud_ids": ["auto-protected-cloud"],
+            "auto_protected_folder_ids": ["auto-protected-folder"],
+        }
 
         self.assertFalse(hunter.can_delete_hybrid_cloud("service-cloud"))
         self.assertFalse(hunter.can_delete_hybrid_cloud("protected-cloud"))
         self.assertFalse(hunter.can_delete_hybrid_cloud("auto-protected-cloud"))
+        self.assertFalse(hunter.can_delete_hybrid_cloud("hunting-cloud", "protected-folder"))
+        self.assertFalse(hunter.can_delete_hybrid_cloud("hunting-cloud", "auto-protected-folder"))
         self.assertTrue(hunter.can_delete_hybrid_cloud("hunting-cloud"))
 
     def test_cloud_slot_count_ignores_fixed_and_unmanaged_clouds(self):
@@ -370,6 +409,33 @@ class IterationTests(unittest.TestCase):
             hunter.ensure_managed_cloud_delete_allowed("protected-cloud")
         with self.assertRaisesRegex(yc.ConfigError, "protected cloud"):
             hunter.ensure_managed_cloud_delete_allowed("auto-protected-cloud")
+
+    def test_protected_folder_delete_is_skipped(self):
+        class FakeClient:
+            def __init__(self):
+                self.deleted = []
+
+            def delete_folder(self, folder_id, immediate=True, wait=True):
+                self.deleted.append((folder_id, immediate, wait))
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {"protected_folder_ids": ["protected-folder"]}
+        hunter.state = {"auto_protected_folder_ids": ["auto-protected-folder"]}
+        hunter.client = FakeClient()
+
+        hunter.submit_folder_delete("protected-folder")
+        hunter.submit_folder_delete("auto-protected-folder")
+        hunter.submit_folder_delete("regular-folder")
+
+        self.assertEqual(hunter.client.deleted, [("regular-folder", True, False)])
+
+    def test_cloud_delete_with_protected_folder_is_rejected(self):
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {"protected_folder_ids": ["protected-folder"]}
+        hunter.state = {}
+
+        with self.assertRaisesRegex(yc.ConfigError, "protected folder"):
+            hunter.ensure_cloud_delete_does_not_include_protected_folder("cloud-1", "protected-folder")
 
     def test_cloud_delete_cleanup_settings_exist(self):
         text = MODULE_PATH.read_text(encoding="utf-8")
@@ -469,11 +535,12 @@ class StateTrackingTests(unittest.TestCase):
     def test_track_cloud_address_deduplicates(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.state = {}
-        hunter.track_cloud_address("cloud-1", "addr-1", "198.51.100.10")
-        hunter.track_cloud_address("cloud-1", "addr-1", "198.51.100.10")
+        hunter.track_cloud_address("cloud-1", "folder-1", "addr-1", "198.51.100.10")
+        hunter.track_cloud_address("cloud-1", "folder-1", "addr-1", "198.51.100.10")
         got = hunter.state["addresses_by_cloud"]["cloud-1"]
         self.assertEqual(len(got), 1)
         self.assertEqual(got[0]["address_id"], "addr-1")
+        self.assertEqual(got[0]["folder_id"], "folder-1")
 
     def test_cleanup_retries_even_when_delete_was_submitted(self):
         class FakeClient:
@@ -496,6 +563,7 @@ class StateTrackingTests(unittest.TestCase):
             "address_delete_retries": 3,
             "address_delete_retry_sleep_seconds": 0,
             "pre_cloud_delete_cleanup_sleep_seconds": 0,
+            "protected_folder_ids": ["protected-folder"],
         }
         hunter.client = FakeClient()
         hunter.dry_run = False
@@ -505,6 +573,38 @@ class StateTrackingTests(unittest.TestCase):
         hunter.cleanup_cloud_addresses("cloud-1")
 
         self.assertEqual(hunter.client.deleted, [("addr-1", False)])
+
+    def test_cleanup_skips_protected_folder_addresses(self):
+        class FakeClient:
+            def __init__(self):
+                self.deleted = []
+
+            def delete_address(self, address_id, wait=True):
+                self.deleted.append((address_id, wait))
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.state = {
+            "addresses_by_cloud": {
+                "cloud-1": [
+                    {"address_id": "addr-protected", "folder_id": "protected-folder"},
+                    {"address_id": "addr-regular", "folder_id": "regular-folder"},
+                ]
+            }
+        }
+        hunter.config = {
+            "protected_folder_ids": ["protected-folder"],
+            "address_delete_retries": 1,
+            "address_delete_retry_sleep_seconds": 0,
+            "pre_cloud_delete_cleanup_sleep_seconds": 0,
+        }
+        hunter.client = FakeClient()
+        hunter.dry_run = False
+        hunter.persist_state = lambda: None
+        hunter.sleep_backoff = lambda seconds: None
+
+        hunter.cleanup_cloud_addresses("cloud-1")
+
+        self.assertEqual(hunter.client.deleted, [("addr-regular", False)])
 
     def test_cleanup_skips_auto_protected_cloud(self):
         class FakeClient:
@@ -561,7 +661,8 @@ class StateTrackingTests(unittest.TestCase):
 
         self.assertEqual(called, ["198.51.100.10"])
         self.assertEqual(hunter.state["success"]["ip"], "198.51.100.10")
-        self.assertNotIn("auto_protected_cloud_ids", hunter.state)
+        self.assertEqual(hunter.state["auto_protected_cloud_ids"], ["cloud-1"])
+        self.assertEqual(hunter.state["auto_protected_folder_ids"], ["folder-1"])
 
     def test_save_success_auto_protects_cloud_when_continue_enabled(self):
         hunter = object.__new__(yc.IpHunter)
@@ -590,6 +691,7 @@ class StateTrackingTests(unittest.TestCase):
         )
 
         self.assertEqual(hunter.state["auto_protected_cloud_ids"], ["cloud-1", "cloud-2"])
+        self.assertEqual(hunter.state["auto_protected_folder_ids"], ["folder-1", "folder-2"])
 
     def test_project_mode_success_blocks_after_auto_isolation(self):
         hunter = object.__new__(yc.IpHunter)
@@ -614,6 +716,7 @@ class StateTrackingTests(unittest.TestCase):
 
         self.assertEqual(hunter.run_hybrid_rotation(), 0)
         self.assertEqual(hunter.state["auto_protected_cloud_ids"], ["cloud-1"])
+        self.assertEqual(hunter.state["auto_protected_folder_ids"], ["folder-1"])
         self.assertEqual(hunter.state["status"], "blocked_by_project_isolation")
 
     def test_telegram_enabled_inside_disabled_parent_still_sends(self):

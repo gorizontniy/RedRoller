@@ -38,6 +38,7 @@ Notes:
 
 # Coordination
 
+- [ ] `README.md` остаётся пользовательским гайдом; внутренняя кухня вынесена в `docs/` / `AGENTS.md`
 - [ ] `docs/ROADMAP.md` обновлён, если изменился продуктовый scope
 - [ ] `docs/AGENT_MAP.md` обновлён, если изменились границы модулей
 - [ ] Screenshots приложены для UI changes
