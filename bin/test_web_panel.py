@@ -262,7 +262,10 @@ class WebPanelTests(unittest.TestCase):
             self.assertTrue(config["notifications"]["enabled"])
             self.assertTrue(config["notifications"]["telegram"]["enabled"])
             self.assertEqual(config["notifications"]["telegram"]["chat_id"], "chat-1")
-            self.assertEqual(config["notifications"]["telegram"]["bot_token"], "token-1")
+            self.assertNotIn("bot_token", config["notifications"]["telegram"])
+            self.assertEqual(config["notifications"]["telegram"]["bot_token_env"], web.TELEGRAM_TOKEN_ENV)
+            self.assertNotIn("token-1", paths["config"].read_text(encoding="utf-8"))
+            self.assertEqual(app.runner_env()[web.TELEGRAM_TOKEN_ENV], "token-1")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -453,12 +456,17 @@ class WebPanelTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            with urllib.request.urlopen(base_url + "/api/session", timeout=5) as response:
+                csrf_token = json.loads(response.read().decode("utf-8"))["csrf_token"]
 
-            def put_json(path, payload):
+            def put_json(path, payload, include_csrf=True):
+                headers = {"Content-Type": "application/json"}
+                if include_csrf:
+                    headers[web.CSRF_HEADER] = csrf_token
                 request = urllib.request.Request(
                     base_url + path,
                     data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="PUT",
                 )
                 try:
@@ -466,6 +474,15 @@ class WebPanelTests(unittest.TestCase):
                         return response.status, json.loads(response.read().decode("utf-8"))
                 except urllib.error.HTTPError as exc:
                     return exc.code, json.loads(exc.read().decode("utf-8"))
+
+            status, body = put_json(
+                f"/api/accounts/{account['id']}/isolation",
+                {"protected_cloud_ids": ["blocked-id"]},
+                include_csrf=False,
+            )
+            self.assertEqual(status, 403)
+            self.assertFalse(body["ok"])
+            self.assertEqual(app.get_account(account["id"])["protected_cloud_ids"], ["old-id"])
 
             status, body = put_json(
                 f"/api/accounts/{account['id']}/isolation",
@@ -500,6 +517,28 @@ class WebPanelTests(unittest.TestCase):
             status, body = put_json("/api/accounts/999/isolation", {"protected_cloud_ids": []})
             self.assertEqual(status, 404)
             self.assertFalse(body["ok"])
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_status_api_works_when_windowed_exe_has_no_stderr(self):
+        root = fresh_test_dir("web-no-stderr")
+        server = None
+        try:
+            app = make_app(root)
+            server = web.WebPanelServer(("127.0.0.1", 0), app)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+            with mock.patch.object(web.sys, "stderr", None):
+                with urllib.request.urlopen(base_url + "/api/status", timeout=5) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(response.status, 200)
+            self.assertIn("active_account", body)
         finally:
             if server is not None:
                 server.shutdown()
@@ -704,6 +743,39 @@ class WebPanelTests(unittest.TestCase):
             self.assertIn("--yes-delete-cloud", command)
             self.assertIn("--stop-file", command)
             self.assertIn("--recreate-file", command)
+            self.assertIn("env", popen.call_args.kwargs)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_spin_can_use_packaged_runner_command(self):
+        root = fresh_test_dir("web-start-packaged")
+
+        class FakeProcess:
+            pid = 4321
+
+            def poll(self):
+                return None
+
+        try:
+            app = web.WebPanelApp(
+                root=MODULE_PATH.parent,
+                runtime_dir=root,
+                db_path=root / "panel.sqlite3",
+                web_dir=MODULE_PATH.parent / "web",
+                python="python",
+                runner_command=["Redroller.exe", "--redroller-hunter-child"],
+            )
+            account = app.create_account(sample_payload())
+
+            with mock.patch.object(web.subprocess, "Popen", return_value=FakeProcess()) as popen:
+                result = app.start_spin(account["id"])
+
+            self.assertTrue(result["ok"])
+            command = popen.call_args.args[0]
+            self.assertEqual(command[:2], ["Redroller.exe", "--redroller-hunter-child"])
+            self.assertIn("--run", command)
+            self.assertIn("--yes-delete-cloud", command)
+            self.assertNotIn("yc_ip_hunter.py", command[:2])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -724,6 +796,8 @@ class WebPanelTests(unittest.TestCase):
             run = result["run"]
             stop_path = Path(run["stop_file"])
             recreate_path = Path(run["recreate_file"])
+            key_path = app.runtime_paths(account["id"])["key"]
+            self.assertTrue(key_path.exists())
             stop_path.write_text("stop\n", encoding="utf-8")
             recreate_path.write_text("recreate\n", encoding="utf-8")
 
@@ -731,6 +805,7 @@ class WebPanelTests(unittest.TestCase):
 
             self.assertFalse(stop_path.exists())
             self.assertFalse(recreate_path.exists())
+            self.assertFalse(key_path.exists())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -943,6 +1018,7 @@ class WebPanelTests(unittest.TestCase):
             self.assertEqual(attempt["cleanup_status"], "deleted")
             self.assertEqual(attempt["cleanup_error"], "")
             self.assertEqual(attempt["cloud_cleanup_status"], "deleted")
+            self.assertFalse(app.runtime_paths(account["id"])["key"].exists())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -1312,6 +1388,8 @@ class WebPanelTests(unittest.TestCase):
         self.assertIn("/isolation", app_js)
         self.assertIn("/targets", app_js)
         self.assertIn("/api/settings/telegram", app_js)
+        self.assertIn("/api/session", app_js)
+        self.assertIn("X-Redroller-CSRF", app_js)
         self.assertIn("selectedRollMode", app_js)
         self.assertNotIn("protected_cloud_ids: lineList", app_js)
         self.assertIn("•••.•••.•••.•••", app_js)

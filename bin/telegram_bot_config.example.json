@@ -2,6 +2,7 @@
   "bot_token_env": "TELEGRAM_BOT_TOKEN",
   "allowed_chat_ids": [],
   "allow_any_chat": false,
+  "allow_any_chat_acknowledged": false,
   "poll_timeout_seconds": 25,
   "stop_timeout_seconds": 45,
   "live_log_interval_seconds": 5,

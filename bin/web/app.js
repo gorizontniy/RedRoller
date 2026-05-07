@@ -7,6 +7,7 @@ const state = {
   isolationSaveToken: 0,
   targetsSaveToken: 0,
   telegram: null,
+  csrfToken: "",
 };
 
 const DONATION_URL = "https://dalink.to/gorizontniy";
@@ -56,15 +57,31 @@ async function copyDonationLink() {
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    if (!state.csrfToken) {
+      throw new Error("CSRF-токен не получен. Обновите страницу Redroller.");
+    }
+    headers["X-Redroller-CSRF"] = state.csrfToken;
+  }
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   const data = await response.json();
   if (!response.ok || data.ok === false) {
     throw new Error(data.error || data.message || "Запрос не выполнен");
   }
   return data;
+}
+
+async function loadSession() {
+  const data = await api("/api/session");
+  state.csrfToken = data.csrf_token || "";
 }
 
 function lineList(value) {
@@ -687,5 +704,7 @@ function attachSse() {
 
 attachEvents();
 resetForm();
-refreshAll().catch((error) => showToast(error.message));
+loadSession()
+  .then(() => refreshAll())
+  .catch((error) => showToast(error.message));
 attachSse();

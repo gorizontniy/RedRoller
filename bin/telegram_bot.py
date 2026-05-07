@@ -47,6 +47,31 @@ class TelegramError(RuntimeError):
     pass
 
 
+def restrict_file_to_current_user(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return
+    username = os.getenv("USERNAME")
+    if not username:
+        return
+    domain = os.getenv("USERDOMAIN")
+    principal = f"{domain}\\{username}" if domain else username
+    if getattr(subprocess.Popen, "__module__", "subprocess") != "subprocess":
+        return
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{principal}:F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def load_json(path: Path) -> Dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -980,6 +1005,12 @@ class ControlBot:
         self.allowed_chat_ids = {str(item) for item in self.config.get("allowed_chat_ids") or []}
         self.allow_any_chat = bool(self.config.get("allow_any_chat", False))
         if self.allow_any_chat:
+            if not bool(self.config.get("allow_any_chat_acknowledged", False)):
+                raise BotConfigError(
+                    "allow_any_chat=true opens control to every Telegram chat. "
+                    "Set allow_any_chat_acknowledged=true only for an isolated test bot, "
+                    "or use allowed_chat_ids."
+                )
             print("WARNING: allow_any_chat=true — бот принимает команды от ЛЮБОГО чата. "
                   "Используйте allowed_chat_ids для ограничения доступа.", file=sys.stderr)
         self.poll_timeout = int(self.config.get("poll_timeout_seconds", 25))
@@ -1317,6 +1348,7 @@ class ControlBot:
         if missing:
             raise ValueError(f"В JSON-ключе не хватает полей: {', '.join(missing)}")
         key_path.write_bytes(key_data)
+        restrict_file_to_current_user(key_path)
 
         # Build new config from existing one as template
         template_cfg: Dict[str, Any] = {}
