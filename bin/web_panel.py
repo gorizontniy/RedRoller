@@ -1462,10 +1462,14 @@ class WebPanelHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    MAX_BODY_SIZE = 4 * 1024 * 1024  # 4 MiB
+
     def read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
             return {}
+        if length > self.MAX_BODY_SIZE:
+            raise WebPanelError(f"Тело запроса слишком большое ({length} байт, максимум {self.MAX_BODY_SIZE}).")
         raw = self.rfile.read(length).decode("utf-8")
         data = json.loads(raw)
         if not isinstance(data, dict):

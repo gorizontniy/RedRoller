@@ -979,6 +979,9 @@ class ControlBot:
         token = str(self.config.get("bot_token") or os.getenv(token_env) or "").strip()
         self.allowed_chat_ids = {str(item) for item in self.config.get("allowed_chat_ids") or []}
         self.allow_any_chat = bool(self.config.get("allow_any_chat", False))
+        if self.allow_any_chat:
+            print("WARNING: allow_any_chat=true — бот принимает команды от ЛЮБОГО чата. "
+                  "Используйте allowed_chat_ids для ограничения доступа.", file=sys.stderr)
         self.poll_timeout = int(self.config.get("poll_timeout_seconds", 25))
         self.stop_timeout = int(self.config.get("stop_timeout_seconds", 45))
         self.live_log_interval = float(self.config.get("live_log_interval_seconds") or 5)
@@ -1305,9 +1308,14 @@ class ControlBot:
         # Save sa-key file
         key_data = self.api.download_file(str(doc.get("file_id") or ""))
         try:
-            json.loads(key_data)
+            parsed_key = json.loads(key_data)
         except json.JSONDecodeError as exc:
             raise ValueError("Файл не является валидным JSON") from exc
+        if not isinstance(parsed_key, dict):
+            raise ValueError("JSON-ключ должен быть объектом")
+        missing = [f for f in ("id", "private_key", "service_account_id") if not parsed_key.get(f)]
+        if missing:
+            raise ValueError(f"В JSON-ключе не хватает полей: {', '.join(missing)}")
         key_path.write_bytes(key_data)
 
         # Build new config from existing one as template
