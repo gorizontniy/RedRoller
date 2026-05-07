@@ -14,6 +14,17 @@
 
 ---
 
+## Поддержать проект
+
+Если Redroller оказался полезен и хочется ускорить развитие проекта, можно поддержать автора:
+
+- DaLink: [dalink.to/gorizontniy](https://dalink.to/gorizontniy)
+- TON: `UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z`
+
+Спасибо за любую поддержку. Она помогает доводить Redroller до нормального релиза, тестировать live-сценарии и двигать проект к multi-provider control center.
+
+---
+
 ## ✦ Идея
 
 **Redroller** превращает ручную охоту за нужным IPv4 в управляемое локальное приложение.

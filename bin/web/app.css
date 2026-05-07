@@ -93,6 +93,29 @@ legend,
   line-height: 1;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.support-link {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 6px solid var(--outline);
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+  box-shadow: 4px 4px 0 var(--outline);
+  padding: 0 16px;
+  font-weight: 900;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
 .icon-btn,
 .square-btn {
   min-width: 48px;
@@ -106,6 +129,7 @@ legend,
 
 .icon-btn:active,
 .square-btn:active,
+.support-link:active,
 .primary-btn:active,
 .secondary-btn:active,
 .spin-btn:active,
@@ -509,6 +533,24 @@ select:focus {
 .muted {
   line-height: 1.45;
   color: var(--on-surface-variant);
+}
+
+.support-actions {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.support-button {
+  flex: 0 1 auto;
+  text-decoration: none;
+}
+
+.wallet-line,
+.wallet-line code {
+  overflow-wrap: anywhere;
 }
 
 code {
