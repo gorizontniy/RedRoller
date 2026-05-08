@@ -160,7 +160,7 @@ class WebPanelLauncherTests(unittest.TestCase):
 
             self.assertIs(result, process)
             env = popen.call_args.kwargs["env"]
-            self.assertEqual(env[launcher.USER_CONFIG_ENV], str(config_path))
+            self.assertEqual(env[launcher.USER_CONFIG_ENV], str(config_path.resolve()))
 
     def test_frozen_default_runtime_dir_uses_local_app_data(self):
         with mock.patch.object(launcher.sys, "frozen", True, create=True), \
@@ -185,6 +185,29 @@ class WebPanelLauncherTests(unittest.TestCase):
 
             self.assertEqual(runtime_dir, local_app_data / "Redroller" / ".web-runtime")
             self.assertEqual((runtime_dir / "ip_rotator.sqlite3").read_text(encoding="utf-8"), "db")
+
+    def test_macos_default_runtime_dir_uses_application_support(self):
+        with mock.patch.object(launcher.sys, "platform", "darwin"), \
+            mock.patch.dict(launcher.os.environ, {}, clear=True), \
+            mock.patch.object(launcher.Path, "home", return_value=Path("/Users/tester")):
+            self.assertEqual(
+                launcher.local_app_data_dir(),
+                Path("/Users/tester") / "Library" / "Application Support",
+            )
+
+    def test_macos_candidate_browsers_include_app_bundles(self):
+        with mock.patch.object(launcher.sys, "platform", "darwin"), \
+            mock.patch.object(launcher.Path, "home", return_value=Path("/Users/tester")):
+            candidates = launcher.candidate_browsers()
+
+        self.assertIn(
+            Path("/Applications") / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+            candidates,
+        )
+        self.assertIn(
+            Path("/Users/tester") / "Applications" / "Microsoft Edge.app" / "Contents" / "MacOS" / "Microsoft Edge",
+            candidates,
+        )
 
 
 if __name__ == "__main__":

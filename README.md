@@ -18,8 +18,8 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.9%2B-blue">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey">
-  <img alt="App" src="https://img.shields.io/badge/app-Redroller.exe-red">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey">
+  <img alt="App" src="https://img.shields.io/badge/app-Redroller-red">
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-green">
   <img alt="Secrets" src="https://img.shields.io/badge/secrets-encrypted-critical">
   <img alt="Status" src="https://img.shields.io/badge/status-Yandex%20Cloud%20baseline-orange">
@@ -104,7 +104,7 @@ TON: `UQAG7KAzuYJDQ96JGYyN8wD5GOkq1sCRM787IAqOgSKPyL_z`
 - 📊 показывать живой статус через локальную web-панель;
 - 🤖 отправлять Telegram-уведомления;
 - 🧾 вести `state.json`, `run.log` и историю попыток;
-- 📦 собираться в Windows `.exe`;
+- 📦 собираться в Windows `.exe` и macOS `.dmg`;
 - 🧪 проверяться unit-тестами.
 
 ---
@@ -226,12 +226,26 @@ python .\bin\web_panel.py --host 127.0.0.1 --port 8787
 | `.\bin\yc_ip_hunter.py` | CLI-движок ротации IPv4 |
 | `.\bin\telegram_bot.py` | отдельный Telegram-control bot |
 | `.\bin\build_web_panel_exe.ps1` | сборка `Redroller.exe` через PyInstaller |
+| `./bin/build_web_panel_dmg.sh` | сборка `Redroller.app` и `Redroller-macOS.dmg` через PyInstaller и `hdiutil` |
 
 Для сборки `.exe` из исходников дополнительно нужен PyInstaller:
 
 ```powershell
 python -m pip install pyinstaller
 .\bin\build_web_panel_exe.ps1
+```
+
+Для сборки `.dmg` на macOS:
+
+```bash
+python3 -m pip install -r bin/requirements.txt
+./bin/build_web_panel_dmg.sh
+```
+
+Если зависимости ставятся в виртуальное окружение, можно явно указать Python:
+
+```bash
+PYTHON_BIN=.venv/bin/python ./bin/build_web_panel_dmg.sh
 ```
 
 ---
@@ -586,6 +600,39 @@ dist/
 ```
 
 Release-папка нужна для чистой выдачи пользователю: только `.exe` и короткая инструкция, без технического мусора.
+
+## 📦 Сборка macOS DMG
+
+Собирать `.dmg` нужно на macOS той архитектуры, для которой нужен релиз:
+
+```bash
+python3 -m pip install -r bin/requirements.txt
+./bin/build_web_panel_dmg.sh
+```
+
+Скрипт использует `python3` по умолчанию. Для venv-сборки:
+
+```bash
+PYTHON_BIN=.venv/bin/python ./bin/build_web_panel_dmg.sh
+```
+
+Сборка создаёт:
+
+```text
+dist/
+├── Redroller-macOS.dmg
+└── release-macos/
+    ├── Redroller.app
+    └── README-macOS.txt
+```
+
+Локальные данные macOS-сборки хранятся в:
+
+```text
+~/Library/Application Support/Redroller/.web-runtime
+```
+
+Без Apple Developer ID приложение будет неподписанным: при первом запуске может понадобиться `Control-click` → `Open`.
 
 ---
 

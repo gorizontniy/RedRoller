@@ -40,6 +40,10 @@ def local_app_data_dir() -> Path:
     local_app_data = os.getenv("LOCALAPPDATA")
     if local_app_data:
         return Path(local_app_data)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    if os.name != "nt":
+        return Path(os.getenv("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
     return Path.home() / "AppData" / "Local"
 
 
@@ -176,6 +180,15 @@ def start_panel(host: str, port: int, runtime_dir: Path) -> subprocess.Popen:
 
 def candidate_browsers() -> List[Path]:
     paths = []
+    if sys.platform == "darwin":
+        for base in (Path("/Applications"), Path.home() / "Applications"):
+            paths.extend(
+                [
+                    base / "Microsoft Edge.app" / "Contents" / "MacOS" / "Microsoft Edge",
+                    base / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+                ]
+            )
+        return paths
     for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
         base = os.getenv(env_name)
         if not base:
@@ -193,7 +206,10 @@ def find_app_browser() -> Optional[Path]:
     for path in candidate_browsers():
         if path.exists():
             return path
-    for name in ("msedge", "chrome"):
+    names = ("msedge", "chrome")
+    if sys.platform == "darwin":
+        names = ("microsoft-edge", "google-chrome", *names)
+    for name in names:
         found = shutil.which(name)
         if found:
             return Path(found)
@@ -204,6 +220,24 @@ def open_app_window(url: str, profile_dir: Path) -> Tuple[Optional[subprocess.Po
     browser = find_app_browser()
     if browser:
         profile_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            app_name = "Microsoft Edge" if "edge" in browser.name.lower() else "Google Chrome"
+            subprocess.Popen(
+                [
+                    "open",
+                    "-na",
+                    app_name,
+                    "--args",
+                    f"--app={url}",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--disable-extensions",
+                    "--disable-background-mode",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return None, False
         args = [
             str(browser),
             f"--app={url}",
