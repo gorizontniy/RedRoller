@@ -8,6 +8,7 @@ const state = {
   targetsSaveToken: 0,
   telegram: null,
   csrfToken: "",
+  sessionLoadPromise: null,
 };
 
 const DONATION_URL = "https://dalink.to/gorizontniy";
@@ -62,17 +63,20 @@ async function api(path, options = {}) {
     "Content-Type": "application/json",
     ...(options.headers || {}),
   };
-  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    if (!state.csrfToken) {
-      throw new Error("CSRF-токен не получен. Обновите страницу Redroller.");
-    }
+  const needsCsrf = !["GET", "HEAD", "OPTIONS"].includes(method);
+  if (needsCsrf) {
+    await ensureSession();
     headers["X-Redroller-CSRF"] = state.csrfToken;
   }
-  const response = await fetch(path, {
-    ...options,
-    headers,
-  });
-  const data = await response.json();
+  let response = await fetch(path, { ...options, headers });
+  let data = await response.json();
+  if (needsCsrf && response.status === 403 && String(data.error || "").includes("CSRF")) {
+    state.csrfToken = "";
+    await ensureSession();
+    headers["X-Redroller-CSRF"] = state.csrfToken;
+    response = await fetch(path, { ...options, headers });
+    data = await response.json();
+  }
   if (!response.ok || data.ok === false) {
     throw new Error(data.error || data.message || "Запрос не выполнен");
   }
@@ -80,8 +84,34 @@ async function api(path, options = {}) {
 }
 
 async function loadSession() {
-  const data = await api("/api/session");
-  state.csrfToken = data.csrf_token || "";
+  if (!state.sessionLoadPromise) {
+    state.sessionLoadPromise = fetch("/api/session", {
+      headers: { "Accept": "application/json" },
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (response.status === 404) {
+          throw new Error("Сервер Redroller запущен из старой версии. Полностью перезапустите Redroller и обновите страницу.");
+        }
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || data.message || "Не удалось получить CSRF-токен Redroller.");
+        }
+        state.csrfToken = data.csrf_token || "";
+        if (!state.csrfToken) {
+          throw new Error("CSRF-токен не получен. Обновите страницу Redroller.");
+        }
+      })
+      .finally(() => {
+        state.sessionLoadPromise = null;
+      });
+  }
+  await state.sessionLoadPromise;
+}
+
+async function ensureSession() {
+  if (!state.csrfToken) {
+    await loadSession();
+  }
 }
 
 function lineList(value) {
