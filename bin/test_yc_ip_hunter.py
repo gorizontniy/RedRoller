@@ -114,6 +114,23 @@ class ClassificationTests(unittest.TestCase):
         err = yc.ApiError(503, "UNAVAILABLE", "service unavailable")
         self.assertEqual(yc.classify_api_error(err), "transient")
 
+    def test_connection_reset_is_wrapped_as_network_error(self):
+        original_urlopen = yc.urllib.request.urlopen
+
+        def raise_connection_reset(*args, **kwargs):
+            raise ConnectionResetError(10054, "connection reset by peer")
+
+        try:
+            yc.urllib.request.urlopen = raise_connection_reset
+            with self.assertRaises(yc.ApiError) as ctx:
+                yc.http_json("GET", "https://example.invalid", body=None, token=None)
+        finally:
+            yc.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(ctx.exception.status, 0)
+        self.assertEqual(ctx.exception.code, "network_error")
+        self.assertEqual(yc.classify_api_error(ctx.exception), "transient")
+
     def test_vpc_rate_limit_is_rate_limit(self):
         err = yc.ApiError(429, 8, "Quota limit vpc.externalAddressesCreation.rate exceeded")
         self.assertEqual(yc.classify_api_error(err), "rate_limit")
@@ -640,6 +657,80 @@ class StateTrackingTests(unittest.TestCase):
 
         with self.assertRaises(yc.RateLimitHit):
             hunter.allocate_and_classify("cloud-1", "folder-1", 1, 1)
+
+    def test_transient_address_error_is_retried(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def reserve_external_ipv4(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise yc.ApiError(0, "network_error", "[WinError 10054] connection reset")
+                return {
+                    "id": "addr-ok",
+                    "externalIpv4Address": {
+                        "address": "198.51.100.10",
+                        "zoneId": "ru-central1-a",
+                    },
+                }
+
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "zone": "ru-central1-a",
+            "zones": ["ru-central1-a"],
+            "target_ips": ["198.51.100.10"],
+            "target_cidrs": [],
+            "create_address_permission_retries": 2,
+            "create_address_permission_retry_sleep_seconds": 0,
+        }
+        hunter.state = {}
+        hunter.client = FakeClient()
+        hunter.dry_run = False
+        hunter.persist_state = lambda: None
+        sleeps = []
+        hunter.sleep_backoff = lambda seconds: sleeps.append(seconds)
+
+        result = hunter.allocate_and_classify("cloud-1", "folder-1", 1, 1)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.ip, "198.51.100.10")
+        self.assertEqual(hunter.client.calls, 2)
+        self.assertEqual(sleeps, [0])
+
+    def test_address_rotation_continues_after_transient_api_error(self):
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "hybrid_max_address_attempts_per_cloud": 2,
+            "address_iteration_sleep_seconds": 0,
+            "cooldown_seconds": 0,
+            "backoff_max_seconds": 0,
+        }
+        calls = []
+
+        def allocate_once_then_success(cloud_id, folder_id, cloud_iteration, address_iteration):
+            calls.append(address_iteration)
+            if len(calls) == 1:
+                raise yc.ApiError(0, "network_error", "[WinError 10054] connection reset")
+            return yc.AttemptResult(
+                ip="198.51.100.10",
+                zone="ru-central1-a",
+                address_id="addr-ok",
+                cloud_id=cloud_id,
+                folder_id=folder_id,
+            )
+
+        hunter.allocate_and_classify = allocate_once_then_success
+        hunter.consume_recreate_request = lambda: False
+        sleeps = []
+        hunter.sleep_backoff = lambda seconds: sleeps.append(seconds)
+
+        result = hunter.run_address_rotation_in_cloud("cloud-1", "folder-1", 1)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.address_id, "addr-ok")
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual(sleeps, [0])
 
     def test_save_success_calls_notification(self):
         hunter = object.__new__(yc.IpHunter)

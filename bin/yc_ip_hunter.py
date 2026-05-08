@@ -307,6 +307,8 @@ def http_json(
         ) from exc
     except urllib.error.URLError as exc:
         raise ApiError(0, "network_error", str(exc.reason)) from exc
+    except (ConnectionError, TimeoutError, OSError) as exc:
+        raise ApiError(0, "network_error", str(exc)) from exc
 
 
 class YandexCloudClient:
@@ -1381,6 +1383,18 @@ class IpHunter:
                 self.sleep_backoff(backoff)
                 backoff = min(max_backoff, backoff * 2)
                 continue
+            except ApiError as exc:
+                kind = classify_api_error(exc)
+                if kind == "transient":
+                    LOGGER.warning(
+                        "Transient address API error in cloud %s; retrying after wait: %s",
+                        cloud_id,
+                        exc.message,
+                    )
+                    self.sleep_backoff(backoff)
+                    backoff = min(max_backoff, backoff * 2)
+                    continue
+                raise
 
             if result:
                 return result
@@ -1572,6 +1586,15 @@ class IpHunter:
                     raise RateLimitHit(exc.message) from exc
                 if kind == "quota":
                     raise QuotaHit(exc.message) from exc
+                if kind == "transient" and attempt < retries:
+                    LOGGER.warning(
+                        "Transient create_address API error; retrying after wait (%s/%s): %s",
+                        attempt,
+                        retries,
+                        exc.message,
+                    )
+                    self.sleep_backoff(retry_sleep)
+                    continue
                 if exc.status == 403 and attempt < retries:
                     LOGGER.warning(
                         "Permission denied during create_address; waiting for IAM propagation (%s/%s).",
