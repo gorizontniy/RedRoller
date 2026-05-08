@@ -933,6 +933,7 @@ class IpHunter:
         base_backoff = float(self.config.get("cooldown_seconds", 15))
         max_backoff = float(self.config.get("backoff_max_seconds", 120))
         backoff = base_backoff
+        reserved_any = False
 
         for iteration in self.iteration_numbers(max_iterations):
             folder_id = ""
@@ -961,6 +962,7 @@ class IpHunter:
                 raise self.step_error("folder rotation", exc) from exc
 
             if result:
+                reserved_any = True
                 self.save_success(result)
                 LOGGER.info(
                     "Reserved target IP %s in cloud=%s folder=%s address=%s.",
@@ -983,6 +985,12 @@ class IpHunter:
             self.sleep_backoff(float(self.config.get("iteration_sleep_seconds", 10)))
             backoff = base_backoff
 
+        if reserved_any:
+            LOGGER.info(
+                "Search finished after max_iterations=%s with at least one reserved target IP.",
+                max_iterations,
+            )
+            return 0
         LOGGER.error("No requested IP reserved after max_iterations=%s.", max_iterations)
         return 2
 
@@ -991,6 +999,7 @@ class IpHunter:
         base_backoff = float(self.config.get("cooldown_seconds", 15))
         max_backoff = float(self.config.get("backoff_max_seconds", 240))
         backoff = base_backoff
+        reserved_any = False
 
         for iteration in self.iteration_numbers(max_iterations):
             LOGGER.info("Cloud rotation iteration %s/%s.", iteration, self.iteration_limit_label(max_iterations))
@@ -1004,6 +1013,7 @@ class IpHunter:
                 cloud_id, folder_id = self.create_cloud_cycle(iteration)
                 result = self.allocate_cloud_batch(cloud_id, folder_id, iteration)
                 if result:
+                    reserved_any = True
                     self.save_success(result)
                     LOGGER.info(
                         "Reserved target IP %s in cloud=%s folder=%s address=%s.",
@@ -1044,6 +1054,12 @@ class IpHunter:
                     return 2
                 raise self.step_error("cloud rotation", exc) from exc
 
+        if reserved_any:
+            LOGGER.info(
+                "Search finished after max_iterations=%s with at least one reserved target IP.",
+                max_iterations,
+            )
+            return 0
         LOGGER.error("No requested IP reserved after max_iterations=%s.", max_iterations)
         return 2
 
@@ -1053,6 +1069,7 @@ class IpHunter:
         max_backoff = float(self.config.get("backoff_max_seconds", 240))
         backoff = base_backoff
         use_existing_scope = True
+        reserved_any = False
 
         for iteration in self.iteration_numbers(max_iterations):
             LOGGER.info(
@@ -1075,6 +1092,7 @@ class IpHunter:
                     managed_cloud = True
                 result = self.run_address_rotation_in_cloud(cloud_id, folder_id, iteration)
                 if result:
+                    reserved_any = True
                     self.save_success(result)
                     LOGGER.info(
                         "Reserved target IP %s in cloud=%s folder=%s address=%s.",
@@ -1147,6 +1165,12 @@ class IpHunter:
                     continue
                 raise self.step_error("hybrid rotation", exc) from exc
 
+        if reserved_any:
+            LOGGER.info(
+                "Search finished after max_iterations=%s with at least one reserved target IP.",
+                max_iterations,
+            )
+            return 0
         LOGGER.error("No requested IP reserved after max_iterations=%s.", max_iterations)
         return 2
 

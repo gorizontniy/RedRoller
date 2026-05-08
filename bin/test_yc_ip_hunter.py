@@ -810,6 +810,34 @@ class StateTrackingTests(unittest.TestCase):
         self.assertEqual(hunter.state["auto_protected_folder_ids"], ["folder-1"])
         self.assertEqual(hunter.state["status"], "blocked_by_project_isolation")
 
+    def test_hybrid_continue_success_returns_ok_when_iteration_limit_ends(self):
+        hunter = object.__new__(yc.IpHunter)
+        hunter.config = {
+            "continue_after_success": True,
+            "max_iterations": 1,
+            "cloud_iteration_sleep_seconds": 0,
+        }
+        hunter.state = {}
+        hunter.persist_state = lambda: None
+        hunter.notify_success = lambda result: None
+        hunter.iteration_numbers = lambda max_iterations: iter([1])
+        hunter.ensure_hybrid_address_scope = lambda iteration: ("cloud-1", "folder-1")
+        hunter.can_delete_hybrid_cloud = lambda cloud_id, folder_id: True
+        hunter.run_address_rotation_in_cloud = lambda cloud_id, folder_id, iteration: yc.AttemptResult(
+            ip="198.51.100.10",
+            zone="ru-central1-a",
+            address_id="addr-1",
+            cloud_id=cloud_id,
+            folder_id=folder_id,
+        )
+        sleeps = []
+        hunter.sleep_backoff = lambda seconds: sleeps.append(seconds)
+
+        self.assertEqual(hunter.run_hybrid_rotation(), 0)
+        self.assertEqual(hunter.state["success"]["ip"], "198.51.100.10")
+        self.assertEqual(hunter.state["cloud_recreations_done"], 1)
+        self.assertEqual(sleeps, [0])
+
     def test_telegram_enabled_inside_disabled_parent_still_sends(self):
         hunter = object.__new__(yc.IpHunter)
         hunter.config = {
