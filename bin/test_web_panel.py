@@ -130,6 +130,7 @@ class WebPanelTests(unittest.TestCase):
                         "target_ips": ["198.51.100.42"],
                         "protected_cloud_ids": ["protected-cloud"],
                         "protected_folder_ids": ["protected-folder"],
+                        "max_iterations": 1,
                         "max_addresses_per_cloud": 17,
                         "max_parallel_clouds": 2,
                         "continue_after_success": True,
@@ -176,6 +177,7 @@ class WebPanelTests(unittest.TestCase):
                 runtime_config = json.loads(paths["config"].read_text(encoding="utf-8"))
                 self.assertFalse(runtime_config["dry_run"])
                 self.assertEqual(runtime_config["organization_id"], "org-from-config")
+                self.assertEqual(runtime_config["max_iterations"], 0)
                 self.assertEqual(runtime_config["max_addresses_per_cloud"], 17)
                 self.assertEqual(runtime_config["max_parallel_clouds"], 2)
                 self.assertEqual(runtime_config["target_cidrs"], ["203.0.113.0/24"])
@@ -360,6 +362,7 @@ class WebPanelTests(unittest.TestCase):
             config = json.loads(paths["config"].read_text(encoding="utf-8"))
             self.assertFalse(config["dry_run"])
             self.assertEqual(config["rotation_mode"], "hybrid")
+            self.assertEqual(config["max_iterations"], 0)
             self.assertEqual(config["target_cloud_id"], "")
             self.assertEqual(config["service_cloud_id"], "cloud-1234567890")
             self.assertFalse(config["notifications"]["enabled"])
