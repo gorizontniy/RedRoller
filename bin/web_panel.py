@@ -1025,6 +1025,7 @@ class WebPanelApp:
             {
                 "dry_run": False,
                 "rotation_mode": "hybrid",
+                "max_iterations": 0,
                 "organization_id": row["organization_id"],
                 "billing_account_id": row["billing_account_id"],
                 "service_cloud_id": row["service_cloud_id"],
